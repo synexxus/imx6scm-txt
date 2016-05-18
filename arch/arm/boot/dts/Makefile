@@ -242,6 +242,34 @@ dtb-$(CONFIG_ARCH_MXC) += \
 	vf610-cosmic.dtb \
 	imx6sx-sdb-emmc.dtb \
 	imx6sx-sdb-m4.dtb \
+	imx6dqscm-1gb-evb-fix-ldo.dtb \
+	imx6dqscm-1gb-evb-interleave-ldo.dtb \
+	imx6dqscm-1gb-evb-btwifi-fix-ldo.dtb \
+	imx6dqscm-1gb-evb-btwifi-interleave-ldo.dtb \
+	imx6dqscm-1gb-evb-enetirq-fix-ldo.dtb \
+	imx6dqscm-1gb-evb-enetirq-interleave-ldo.dtb \
+	imx6dqscm-1gb-evb-hdcp-fix-ldo.dtb \
+	imx6dqscm-1gb-evb-hdcp-interleave-ldo.dtb \
+	imx6dqscm-2gb-evb-fix-ldo.dtb \
+        imx6dqscm-2gb-evb-interleave-ldo.dtb \
+        imx6dqscm-2gb-evb-btwifi-fix-ldo.dtb \
+        imx6dqscm-2gb-evb-btwifi-interleave-ldo.dtb \
+        imx6dqscm-2gb-evb-enetirq-fix-ldo.dtb \
+        imx6dqscm-2gb-evb-enetirq-interleave-ldo.dtb \
+        imx6dqscm-2gb-evb-hdcp-fix-ldo.dtb \
+        imx6dqscm-2gb-evb-hdcp-interleave-ldo.dtb \
+	imx6dqscm-1gb-qwks-rev1-fix-ldo.dtb \
+        imx6dqscm-1gb-qwks-rev1-interleave-ldo.dtb \
+        imx6dqscm-1gb-qwks-rev1-wifi-fix-ldo.dtb \
+        imx6dqscm-1gb-qwks-rev1-wifi-interleave-ldo.dtb \
+	imx6dqscm-1gb-qwks-rev1-hdcp-fix-ldo.dtb \
+        imx6dqscm-1gb-qwks-rev1-hdcp-interleave-ldo.dtb \
+	imx6dqscm-1gb-qwks-rev2-fix-ldo.dtb \
+        imx6dqscm-1gb-qwks-rev2-interleave-ldo.dtb \
+        imx6dqscm-1gb-qwks-rev2-wifi-fix-ldo.dtb \
+        imx6dqscm-1gb-qwks-rev2-wifi-interleave-ldo.dtb \
+        imx6dqscm-1gb-qwks-rev2-hdcp-fix-ldo.dtb \
+        imx6dqscm-1gb-qwks-rev2-hdcp-interleave-ldo.dtb \
 	vf610-twr.dtb \
 	imx7d-12x12-lpddr3-arm2.dtb \
 	imx7d-12x12-ddr3-arm2.dtb \

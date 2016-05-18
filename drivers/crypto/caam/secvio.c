@@ -204,7 +204,9 @@ static int snvs_secvio_probe(struct platform_device *pdev)
 	struct device_node *np, *npirq;
 	struct snvs_full __iomem *snvsregs;
 	int i, error;
+	void *jtd, *wtd, *itd, *etd;
 	u32 hpstate;
+	u32 initstate;
 
 	svpriv = kzalloc(sizeof(struct snvs_secvio_drv_private), GFP_KERNEL);
 	if (!svpriv)
@@ -214,6 +216,31 @@ static int snvs_secvio_probe(struct platform_device *pdev)
 	dev_set_drvdata(svdev, svpriv);
 	svpriv->pdev = pdev;
 	np = pdev->dev.of_node;
+
+	jtd = of_get_property(pdev->dev.of_node, "jtag-tamper-det", NULL);
+	wtd = of_get_property(pdev->dev.of_node, "watchdog-tamper-det", NULL);
+	itd = of_get_property(pdev->dev.of_node, "internal-tamper-det", NULL);
+	etd = of_get_property(pdev->dev.of_node, "external-tamper-det", NULL);
+	if (!jtd | !wtd | !itd | !etd ) {
+		dev_err(svdev, "can't identify alarms configuration\n");
+		kfree(svpriv);
+		return -EINVAL;
+	}
+
+	/*
+	 * Configure all sources  according to device tree property.
+	 * If the property is enabled then the source is ser as
+	 * fatal violations except LP section,
+	 * source #5 (typically used as an external tamper detect), and
+	 * source #3 (typically unused). Whenever the transition to
+	 * secure mode has occurred, these will now be "fatal" violations
+	 */
+	initstate = HP_SECVIO_INTEN_SRC0;
+	initstate = (!strcmp(jtd, "enabled")) ? (initstate | HP_SECVIO_INTEN_SRC1) : initstate;
+	initstate = (!strcmp(wtd, "enabled")) ? (initstate | HP_SECVIO_INTEN_SRC2) : initstate;
+	initstate = (!strcmp(itd, "enabled")) ? (initstate | HP_SECVIO_INTEN_SRC4) : initstate;
+	initstate = (!strcmp(etd, "enabled")) ? (initstate | HP_SECVIO_INTEN_SRC5) : initstate;
+
 
 	npirq = of_find_compatible_node(NULL, NULL, "fsl,imx6q-caam-secvio");
 	if (!npirq) {
@@ -262,15 +289,8 @@ static int snvs_secvio_probe(struct platform_device *pdev)
 	}
 
 	clk_prepare_enable(svpriv->clk);
-	/*
-	 * Configure all sources as fatal violations except LP section,
-	 * source #5 (typically used as an external tamper detect), and
-	 * source #3 (typically unused). Whenever the transition to
-	 * secure mode has occurred, these will now be "fatal" violations
-	 */
-	wr_reg32(&svpriv->svregs->hp.secvio_intcfg,
-		 HP_SECVIO_INTEN_SRC4 | HP_SECVIO_INTEN_SRC2 |
-		 HP_SECVIO_INTEN_SRC1 | HP_SECVIO_INTEN_SRC0);
+	
+	wr_reg32(&svpriv->svregs->hp.secvio_intcfg, initstate);
 
 	hpstate = (rd_reg32(&svpriv->svregs->hp.status) &
 			    HP_STATUS_SSM_ST_MASK) >> HP_STATUS_SSM_ST_SHIFT;
