@@ -25,6 +25,7 @@
 				MX6QDL_PAD_NANDF_CS2__GPIO6_IO15 0x80000000
 				MX6QDL_PAD_KEY_COL2__GPIO4_IO10 0x80000000
 				MX6QDL_PAD_EIM_EB2__GPIO2_IO30 0x80000000
+				MX6QDL_PAD_DISP0_DAT3__GPIO4_IO24 0x1b0b0
 /*
 				MX6QDL_PAD_NANDF_D0__GPIO2_IO00 0x80000000
 				MX6QDL_PAD_NANDF_D1__GPIO2_IO01 0x80000000
@@ -100,13 +101,19 @@
 		
 			pinctrl_i2c2_imx224_mipi: i2c2-imx224-mipigrp {
 		fsl,pins = <
-#define GP_IMX224_MIPI_CAM_SEL2	<&gpio6 5 GPIO_ACTIVE_HIGH>
 			MX6QDL_PAD_CSI0_DAT19__GPIO6_IO05	0x0b0b0
-#define GP_IMX224_MIPI_CAM_SEL1	<&gpio1 0 GPIO_ACTIVE_HIGH>
 			MX6QDL_PAD_GPIO_0__GPIO1_IO00    	0x0b0b0
-#define GP_IMX224_MIPI_RESET		<&gpio2 5 GPIO_ACTIVE_LOW>
 			MX6QDL_PAD_NANDF_D5__GPIO2_IO05		0x000b0			
-			
+
+/*#define GP_IMX224_MIPI_CAM_SEL1	<&gpio1 0 GPIO_ACTIVE_HIGH>
+#define GP_IMX224_MIPI_CAM_SEL2	<&gpio6 5 GPIO_ACTIVE_HIGH>*/
+
+#define GP_IMX224_MIPI_CAM_SEL1 <&gpio4 26 GPIO_ACTIVE_HIGH>
+#define GP_IMX224_MIPI_CAM_SEL2 <&gpio4 27 GPIO_ACTIVE_HIGH>
+
+#define GP_IMX224_MIPI_RESET	<&gpio2 5 GPIO_ACTIVE_LOW>
+#define GP_IMX224_I2C_CAM_SEL3	<&gpio5 7 GPIO_ACTIVE_HIGH>		
+#define GP_IMX224_I2C_CAM_SEL4	<&gpio5 8 GPIO_ACTIVE_HIGH>		
 			
 		>;
 	};
@@ -191,6 +198,26 @@
 			>;
 		};
 
+		pinctrl_enet_ssm: enetgrp {
+			fsl,pins = <
+				MX6QDL_PAD_ENET_MDIO__ENET_MDIO         0x1b0a8
+				MX6QDL_PAD_ENET_MDC__ENET_MDC           0x1b0a8
+				MX6QDL_PAD_ENET_RXD0__ENET_RX_DATA0     0x1b0a8
+				MX6QDL_PAD_ENET_RXD1__ENET_RX_DATA1     0x1b0a8
+				MX6QDL_PAD_ENET_CRS_DV__ENET_RX_EN      0x1b0a8
+
+				MX6QDL_PAD_ENET_TXD0__ENET_TX_DATA0     0x1b0a8
+				MX6QDL_PAD_ENET_TXD1__ENET_TX_DATA1     0x1b0a8
+				MX6QDL_PAD_ENET_TX_EN__ENET_TX_EN       0x1b0a8
+				MX6QDL_PAD_GPIO_16__ENET_REF_CLK        0x4001b0a1
+			>;
+		};
+
+		/*pinctrl_gpio_keys: gpio-keysgrp {
+                        fsl,pins = <
+                                MX6QDL_PAD_ENET_MDC__ENET_MDC           0x1b0b0
+                        >;
+                };*/
 	};
 };
 
@@ -309,6 +336,37 @@
 		default-brightness-level = <7>;
 		status = "disabled";
 	};*/
+	/*gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_gpio_keys>;
+
+		sd_card_sw {
+			label = "SD_CAD_SW";
+			gpios = ;
+		}
+
+		enet_pwr_en {
+			label = "ENET_PWR_EN";
+			gpios = ;
+		}
+		
+		irid_5v0_pwr_en {
+			label = "IRID_5V0_PWR_EN";
+			gpios = ;
+		}
+
+		itp_4g_en {
+			label = "ITP_4G_EN";
+			gpios = ;
+		}
+
+		radar_on {
+			label = "RADAR_ON";
+			gpios = ;
+		}
+
+	}*/
 	v4l2_cap_0: v4l2_cap_0 {
 		compatible = "fsl,imx6q-v4l2-capture";
 		ipu_id = <0>;
@@ -391,7 +449,7 @@
 		reg = <0x50>;
 	};
 	
-	imx224_mipi: imx224_mipi@1a {
+/*	imx224_mipi: imx224_mipi@1a {
 		compatible = "ovti,imx224_mipi";
 		reg = <0x1a>;
 		pinctrl-names = "default";
@@ -411,7 +469,7 @@
 		mclk_source = <0>;
 		//pwms = <&pwm3 0 45>;
 	};
-
+*/
         pmic: pfuze100@08 {
                 compatible = "fsl,pfuze100";
                 reg = <0x08>;
@@ -549,7 +607,29 @@
 		interrupts = <14 0>;
 		gpios = <&gpio4 10 0>;
         };
-	
+
+	imx224_mipi: imx224_mipi@1a {
+                compatible = "ovti,imx224_mipi";
+                reg = <0x1a>;
+                pinctrl-names = "default";
+                pinctrl-0 = <&pinctrl_i2c2_imx224_mipi>;
+                clocks = <&clks 147>;
+                clock-names = "csi_mclk";
+                DOVDD-supply = <&reg_1p8v>;
+                AVDD-supply = <&reg_2p5v>;
+                DVDD-supply = <&reg_1p8v>;
+                //pwn-gpios = GP_OV5640_MIPI_POWER_DOWN;
+                cam_sel1-gpios = GP_IMX224_MIPI_CAM_SEL1;
+                cam_sel2-gpios = GP_IMX224_MIPI_CAM_SEL2;
+		//cam_sel3-gpios = GP_IMX224_I2C_CAM_SEL3;
+		//cam_sel4-gpios = GP_IMX224_I2C_CAM_SEL4;
+                rst-gpios = GP_IMX224_MIPI_RESET;
+                ipu_id = <0>;
+                csi_id = <1>;
+                mclk = <37125000>;
+                mclk_source = <0>;
+                //pwms = <&pwm3 0 45>;
+        };	
 };
 
 &dcic1 {
@@ -715,6 +795,13 @@
         keep-power-in-suspend;
         enable-sdio-wakeup;
         status = "disabled";
+};
+
+&fec {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_enet_ssm>;
+	phy-mode = "rmii";
+	status = "okay";
 };
 
 &wdog1 {
