@@ -77,10 +77,12 @@ struct imx224_mode_info {
  * Maintains the information on the current state of the sesor.
  */
 static struct sensor_data imx224_data;
-static int rst_gpio, cam_sel2_gpio, cam_sel1_gpio;
+static int rst_gpio, cam_on_gpio,
+		cam_sel2_gpio, cam_sel1_gpio, cam_sel3_gpio, cam_sel4_gpio,
+		cam0_led_gpio, cam1_led_gpio, cam2_led_gpio;
 
 // LEOPARDS
-static struct reg_value imx224_settings1[] = {
+/*static struct reg_value imx224_settings1[] = {
 		{0x3000, 0x01, 0, 0},
 		{0x3001, 0x00, 0, 0},
 		{0x3002, 0x00, 0, 0}, //01
@@ -914,7 +916,7 @@ static struct reg_value imx224_settings1[] = {
 		{0x3341, 0x11, 0, 0},
 		{0x3342, 0x11, 0, 0},
 		{0x3343, 0x00, 0, 0},
-		{0x3344, 0x20, 0, 0},/////*****?
+		{0x3344, 0x20, 0, 0},/////?
 		{0x3345, 0x00, 0, 0},
 		{0x3346, 0x03, 0, 0},
 		{0x3347, 0x00, 0, 0},
@@ -1102,7 +1104,7 @@ static struct reg_value imx224_settings1[] = {
 		{0x33FD, 0x00, 0, 0},
 		{0x33FE, 0x00, 0, 0},
 		{0x0000, 0x00, 0, 0},
-};
+};*/
 
 
 #define IMX290
@@ -1708,13 +1710,13 @@ static s32 imx224_write_reg(u16 reg, u8 val)
 
 static int ioctl_send_command(struct v4l2_int_device *s, struct v4l2_send_command_control *vc) {
 	int ret = -1;
-	int retval1;
-	u8 regval;
-	u8 loca_val=0;
+	//int retval1;
+	//u8 regval;
+	//u8 loca_val=0;
 	
-	int i = 0;
+	//int i = 0;
 	void *mipi_csi2_info;
-	u32 mipi_reg;
+	//u32 mipi_reg;
 	
 	//pr_info("%s: called\n",__func__);
 	//struct timespec curr_tm;
@@ -1861,8 +1863,8 @@ static int ioctl_send_command(struct v4l2_int_device *s, struct v4l2_send_comman
 static int imx224_init_mode(enum imx224_frame_rate frame_rate,
 			    enum imx224_mode mode, enum imx224_mode orig_mode)
 {
-	struct reg_value *pModeSetting = NULL;
-	s32 ArySize = 0;
+	//struct reg_value *pModeSetting = NULL;
+	//s32 ArySize = 0;
 	int retval = 0;
 	int i;
 	void *mipi_csi2_info;
@@ -2520,7 +2522,7 @@ static int ioctl_enum_framesizes(struct v4l2_int_device *s,
 static int ioctl_enum_frameintervals(struct v4l2_int_device *s,
 					 struct v4l2_frmivalenum *fival)
 {
-	int i, j, count = 0;
+	//int i, j, count = 0;
 
 	pr_info("%s: called\n",__func__);
 	
@@ -2744,10 +2746,11 @@ static DEVICE_ATTR(imx224_reg, S_IRUGO|S_IWUGO, show_reg, set_reg);
 static int imx224_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
-	struct pwm_device *pwm;
+	//struct pwm_device *pwm;
 	struct device *dev = &client->dev;
 	int retval;
-	u8 chip_id_high, chip_id_low, imx224data;
+	//u8 chip_id_high, chip_id_low,
+	u8 imx224data;
 	struct sensor_data *sensor = &imx224_data;
 	
 	pr_info("%s: called\n",__func__);
@@ -2770,7 +2773,6 @@ static int imx224_probe(struct i2c_client *client,
 		return retval;
 	}
 
-
 	/* request cam_sel1-gpios pin */
 	cam_sel1_gpio = of_get_named_gpio(dev->of_node, "cam_sel1-gpios", 0);
 	if (!gpio_is_valid(cam_sel1_gpio)) {
@@ -2784,8 +2786,65 @@ static int imx224_probe(struct i2c_client *client,
 		return retval;
 	}
 
+        cam_sel3_gpio = of_get_named_gpio(dev->of_node, "cam_sel3-gpios", 0);
+        if (!gpio_is_valid(cam_sel3_gpio)) {
+                dev_warn(dev, "no cam_sel3_gpio pin available");
+                return -EINVAL;
+        }
+        retval = devm_gpio_request_one(dev, cam_sel3_gpio, GPIOF_OUT_INIT_LOW,
+                                        "imx224_mipi_camsel3");
+        if (retval < 0) {
+                dev_warn(dev, "request of cam_sel3_gpio failed");
+                return retval;
+        }
 
-	/* request reset pin */
+        cam_sel4_gpio = of_get_named_gpio(dev->of_node, "cam_sel4-gpios", 0);
+        if (!gpio_is_valid(cam_sel4_gpio)) {
+                dev_warn(dev, "no cam_sel4_gpio pin available");
+                return -EINVAL;
+        }
+        retval = devm_gpio_request_one(dev, cam_sel4_gpio, GPIOF_OUT_INIT_LOW,
+                                        "imx224_mipi_camsel4");
+        if (retval < 0) {
+                dev_warn(dev, "request of cam_sel4_gpio failed");
+                return retval;
+        }
+
+        cam0_led_gpio = of_get_named_gpio(dev->of_node, "cam0_led-gpios", 0);
+        if (!gpio_is_valid(cam0_led_gpio)) {
+                dev_warn(dev, "no cam0_led_gpio pin available");
+                return -EINVAL;
+        }
+        retval = devm_gpio_request_one(dev, cam0_led_gpio, GPIOF_OUT_INIT_LOW,
+                                        "imx224_cam0_led");
+        if (retval < 0) {
+                dev_warn(dev, "request of imx224_cam0_led_gpio failed");
+                return retval;
+        }
+
+	cam1_led_gpio = of_get_named_gpio(dev->of_node, "cam1_led-gpios", 0);
+        if (!gpio_is_valid(cam1_led_gpio)) {
+                dev_warn(dev, "no cam1_led_gpio pin available");
+                return -EINVAL;
+        }
+        retval = devm_gpio_request_one(dev, cam1_led_gpio, GPIOF_OUT_INIT_LOW,
+                                        "imx224_cam1_led");
+        if (retval < 0) {
+                dev_warn(dev, "request of imx224_cam1_led_gpio failed");
+                return retval;
+        }
+
+        cam2_led_gpio = of_get_named_gpio(dev->of_node, "cam2_led-gpios", 0);
+        if (!gpio_is_valid(cam2_led_gpio)) {
+                dev_warn(dev, "no cam2_led_gpio pin available");
+                return -EINVAL;
+        }
+        retval = devm_gpio_request_one(dev, cam2_led_gpio, GPIOF_OUT_INIT_LOW,
+                                        "imx224_cam2_led");
+        if (retval < 0) {
+                dev_warn(dev, "request of imx224_cam2_led_gpio failed");
+                return retval;
+        }
 
 	rst_gpio = of_get_named_gpio(dev->of_node, "rst-gpios", 0);
 	if (!gpio_is_valid(rst_gpio)) {
@@ -2799,6 +2858,17 @@ static int imx224_probe(struct i2c_client *client,
 		return retval;
 	}
 
+        cam_on_gpio = of_get_named_gpio(dev->of_node, "cam-on-gpios", 0);
+        if (!gpio_is_valid(cam_on_gpio)) {
+                dev_warn(dev, "no camera sensor on pin available");
+                return -EINVAL;
+        }
+        retval = devm_gpio_request_one(dev, cam_on_gpio, GPIOF_OUT_INIT_HIGH,
+                                        "imx224_camera_on");
+        if (retval < 0) {
+                dev_warn(dev, "request of imx224_camera_on failed");
+                return retval;
+        }
 
 	/* Set initial values for the sensor struct. */
 	memset(&imx224_data, 0, sizeof(imx224_data));
