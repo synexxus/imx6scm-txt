@@ -96,6 +96,14 @@
 			fsl,pins = <
 				MX6QDL_PAD_CSI0_DAT10__UART1_TX_DATA	0x1b0b1
 				MX6QDL_PAD_CSI0_DAT11__UART1_RX_DATA	0x1b0b1
+/*
+MX6QDL_PAD_EIM_D19__UART1_CTS_B 0x1b0b1
+MX6QDL_PAD_EIM_D23__UART1_DCD_B 0x1b0b1
+MX6QDL_PAD_EIM_D25__UART1_DSR_B 0x1b0b1
+MX6QDL_PAD_EIM_D24__UART1_DTR_B 0x1b0b1
+MX6QDL_PAD_DISP0_DAT1__GPIO4_IO22 0x1b0b1
+MX6QDL_PAD_EIM_D20__UART1_RTS_B0x1b0b1
+*/
 			>;
 		};
 
@@ -103,6 +111,13 @@
                         fsl,pins = <
                                 MX6QDL_PAD_EIM_D27__UART2_RX_DATA       0x1b0b1
                                 MX6QDL_PAD_EIM_D26__UART2_TX_DATA       0x1b0b1
+                        >;
+                };
+
+		pinctrl_uart3: uart3grp {
+			fsl,pins = <
+                                MX6QDL_PAD_SD4_CLK__UART3_RX_DATA       0x1b0b1
+                                MX6QDL_PAD_SD4_CMD__UART3_TX_DATA       0x1b0b1
                         >;
                 };
 
@@ -603,6 +618,12 @@
 &uart2 {
         pinctrl-names = "default";
         pinctrl-0 = <&pinctrl_uart2>;
+        status = "okay";
+};
+
+&uart3 {
+        pinctrl-names = "default";
+        pinctrl-0 = <&pinctrl_uart3>;
         status = "okay";
 };
 
