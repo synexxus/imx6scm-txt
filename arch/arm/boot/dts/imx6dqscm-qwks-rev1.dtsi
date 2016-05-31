@@ -15,10 +15,11 @@
 &iomuxc {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_hog>;
+/*USB_OTG_PWR_EN	DISP0_DAT2 ==> GPIO4_IO23 ==> Driven by USB OTG Regulator GPIO ==> use Defaults */
 /*SD_CARD_SW	DISPO_DAT9 ==> DEFAULT ON ==> LEAVE - WORKS*/
 /*ENET_PWR_EN	DISPO_DAT12 ==> DEFAULT ON ==> LEAVE - WORKS*/
 /*RADAR_ON	DISPO_DAT8 ==> DEFAULT OFF*/
-/*ITP_4G_EN	DISPO_DAT7 ==> DEFAULT OFF*/
+/*ITP_4G_EN	DISPO_DAT7 ==> DEFAULT OFF ==> MAYNEED TO CHANGE TO GET USBH1 up*/
 /*IRID_5V0_PWR_EN	DISPO_DAT10 ==> DEFAULT OFF*/
 	imx6qdl-sabresd {
 		pinctrl_hog: hoggrp {
@@ -28,9 +29,10 @@
 				MX6QDL_PAD_NANDF_CS2__GPIO6_IO15 0x80000000
 				MX6QDL_PAD_KEY_COL2__GPIO4_IO10 0x80000000
 				MX6QDL_PAD_EIM_EB2__GPIO2_IO30 0x80000000
+				/*MX6QDL_PAD_DISP0_DAT2__GPIO4_IO23 0x80000000*/
 				MX6QDL_PAD_DISP0_DAT10__GPIO4_IO31 0x400138b1
 				MX6QDL_PAD_DISP0_DAT8__GPIO4_IO29 0x400138b1
-				MX6QDL_PAD_DISP0_DAT7__GPIO4_IO28 0x400138b1
+				MX6QDL_PAD_DISP0_DAT7__GPIO4_IO28 0x4001b8b1
 			>;
 		};
 
@@ -226,7 +228,7 @@ MX6QDL_PAD_EIM_D20__UART1_RTS_B0x1b0b1
 			regulator-name = "usb_otg_vbus";
 			regulator-min-microvolt = <5000000>;
 			regulator-max-microvolt = <5000000>;
-			gpio = <&gpio3 22 0>;
+			gpio = <&gpio4 23 0>;
 			enable-active-high;
 		};
 		
@@ -639,6 +641,9 @@ MX6QDL_PAD_EIM_D20__UART1_RTS_B0x1b0b1
         status = "okay";
 };
 
+&usbh1 {
+	status = "okay";
+};
 
 &usbotg {
 	vbus-supply = <&reg_usb_otg_vbus>;
@@ -648,7 +653,7 @@ MX6QDL_PAD_EIM_D20__UART1_RTS_B0x1b0b1
 	srp-disable;
 	hnp-disable;
 	adp-disable;
-	status = "okay";
+	status = "disabled";
 };
 
 
