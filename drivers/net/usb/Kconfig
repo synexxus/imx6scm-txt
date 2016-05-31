@@ -553,6 +553,24 @@ config USB_SIERRA_NET
 	  To compile this driver as a module, choose M here: the
 	  module will be called sierra_net.
 
+config USB_NET_GOBINET
+        tristate "USB-to-WWAN Driver for Gobinet/Sierra Wireless modems"
+        depends on USB_USBNET
+        help
+          Choose this option if you have a Gobinet Sierra Wireless USB-to-WWAN device.
+
+          To compile this driver as a module, choose M here: the
+          module will be called gobinet.
+
+config USB_NET_GOBISERIAL
+        tristate "USB-to-WWAN Driver for Gobinet/Sierra Wireless modems Serial Driver"
+        depends on USB_USBNET
+        help
+          Choose this option if you have a Gobinet Sierra Wireless USB-to-WWAN device.
+
+          To compile this driver as a module, choose M here: the
+          module will be called gobiserial.
+
 config USB_VL600
 	tristate "LG VL600 modem dongle"
 	depends on USB_NET_CDCETHER && TTY
