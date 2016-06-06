@@ -1361,7 +1361,7 @@ static struct reg_value imx224_settings[] = {
 	{0x33B3, 0x04, 0, 0},
 	
 //END
-	{0x3000, 0x01, 0, 0},
+	{0x3000, 0x00, 0, 0},//0x01 = sleep 0x00 = on
 	{0x3002, 0x00, 0, 0},
 	
 	{0x0000, 0x00, 0, 0},
@@ -1564,6 +1564,12 @@ static void imx224_reset(void)
 
 	gpio_set_value(cam_sel1_gpio, 0);
 	msleep(5);
+	
+	gpio_set_value(cam_sel4_gpio, 0);
+	msleep(5);
+
+	gpio_set_value(cam_sel3_gpio, 0);
+	msleep(5);
 
 	gpio_set_value(rst_gpio, 0);
 	msleep(1);
@@ -1753,15 +1759,27 @@ static int ioctl_send_command(struct v4l2_int_device *s, struct v4l2_send_comman
 			break;
 		case 69: // Change camera MUX
 			
-			imx224_write_reg(0x3002, 0x00);
-			imx224_write_reg(0x3000, 0x01);
+		//	imx224_write_reg(0x3002, 0x00);
+		//	imx224_write_reg(0x3000, 0x01);
 			
 			//pr_info("	Cam Sel1: %d Cam Sel2: %d\n", vc->value0, vc->value1);
 
 			gpio_set_value(cam_sel2_gpio, vc->value1);
 			gpio_set_value(cam_sel1_gpio, vc->value0);
-			//msleep(5); 
-			
+                        gpio_set_value(cam_sel4_gpio, vc->value1);
+                        gpio_set_value(cam_sel3_gpio, vc->value0);
+
+			msleep(5); 
+			int i = 0;
+			pr_info("%s: Configuring Camera during switch\n",__func__);
+			for( i=0; i<1520; i++ )
+			{	
+				if( imx224_settings[i].u16RegAddr == 0x0000 ) {
+					break;
+				}
+			imx224_write_reg( imx224_settings[i].u16RegAddr , imx224_settings[i].u8Val );
+			}
+
 			
 			imx224_write_reg(0x3002, 0x00);
 			imx224_write_reg(0x3000, 0x00);
@@ -2008,6 +2026,9 @@ static int imx224_init_mode(enum imx224_frame_rate frame_rate,
 		
 		gpio_set_value(cam_sel2_gpio, 1);
 		gpio_set_value(cam_sel1_gpio, 1);
+		gpio_set_value(cam_sel4_gpio, 1);
+		gpio_set_value(cam_sel3_gpio, 1);
+		
 	//	msleep(100);
 		
 		pr_info("%s: Configuring Camera 2\n",__func__);
@@ -2022,6 +2043,10 @@ static int imx224_init_mode(enum imx224_frame_rate frame_rate,
 		
 		gpio_set_value(cam_sel2_gpio, 0);
 		gpio_set_value(cam_sel1_gpio, 1);
+		
+		gpio_set_value(cam_sel4_gpio, 0);
+		gpio_set_value(cam_sel3_gpio, 1);
+		
 	//	msleep(100);
 		
 		pr_info("%s: Configuring Camera 1\n",__func__);
@@ -2036,6 +2061,8 @@ static int imx224_init_mode(enum imx224_frame_rate frame_rate,
 	//	msleep(100);
 		gpio_set_value(cam_sel2_gpio, 0);
 		gpio_set_value(cam_sel1_gpio, 0);
+		gpio_set_value(cam_sel4_gpio, 0);
+		gpio_set_value(cam_sel3_gpio, 0);
 	//	msleep(100);
 
 		pr_info("%s: Configuring Camera 0\n",__func__);
@@ -2047,8 +2074,8 @@ static int imx224_init_mode(enum imx224_frame_rate frame_rate,
 			imx224_write_reg( imx224_settings[i].u16RegAddr , imx224_settings[i].u8Val );
 		}
 		
-		imx224_write_reg(0x3002, 0x00);
-		imx224_write_reg(0x3000, 0x00);
+	//	imx224_write_reg(0x3002, 0x00);
+	//	imx224_write_reg(0x3000, 0x00);
 			
 		//msleep(100);
 		//gpio_set_value(cam_sel2_gpio, 0);
