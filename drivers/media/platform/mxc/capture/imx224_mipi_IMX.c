@@ -1,0 +1,2491 @@
+/*
+ * 
+ */
+#define DEBUG
+
+#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/slab.h>
+#include <linux/ctype.h>
+#include <linux/types.h>
+#include <linux/delay.h>
+#include <linux/clk.h>
+#include <linux/of_device.h>
+#include <linux/i2c.h>
+#include <linux/of_gpio.h>
+#include <linux/pinctrl/consumer.h>
+#include <linux/proc_fs.h>
+#include <linux/pwm.h>
+#include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
+#include <linux/fsl_devices.h>
+#include <linux/mipi_csi2.h>
+#include <media/v4l2-chip-ident.h>
+#include "v4l2-int-device.h"
+#include "mxc_v4l2_capture.h"
+#include <linux/time.h>
+
+#define IMX224_VOLTAGE_ANALOG               3300000
+#define IMX224_VOLTAGE_DIGITAL_CORE         1800000
+#define IMX224_VOLTAGE_DIGITAL_IO           1200000
+
+#define MIN_FPS 15
+#define MAX_FPS 120
+#define DEFAULT_FPS 30
+
+// 2016.01.11 JV
+// Not sure what these should be
+#define IMX224_XCLK_MIN 6000000
+#define IMX224_XCLK_MAX 27000000
+
+enum imx224_mode {
+	imx224_mode_MIN = 0,
+	imx224_mode_VGA_1312_978 = 0,
+	imx224_mode_MAX = 0,
+	imx224_mode_INIT = 0xff, /*only for sensor init*/
+};
+
+enum imx224_frame_rate {
+	imx224_15_fps,
+	imx224_30_fps,
+	imx224_60_fps,
+	imx224_120_fps,
+};
+
+static int imx224_framerates[] = {
+	[imx224_15_fps] = 15,
+	[imx224_30_fps] = 30,
+	[imx224_60_fps] = 60,
+	[imx224_120_fps] = 120,
+};
+
+struct reg_value {
+	u16 u16RegAddr;
+	u8 u8Val;
+	u8 u8Mask;
+	u32 u32Delay_ms;
+};
+
+struct imx224_mode_info {
+	enum imx224_mode mode;
+	u32 width;
+	u32 height;
+	struct reg_value *init_data_ptr;
+	u32 init_data_size;
+};
+
+/*!
+ * Maintains the information on the current state of the sesor.
+ */
+static struct sensor_data imx224_data;
+static int pwn_gpio, rst_gpio, cam_sel2_gpio, cam_sel1_gpio;
+
+static struct reg_value imx224_settings1[] = {
+		{0x3000, 0x01, 0, 0},
+		{0x3001, 0x00, 0, 0},
+		{0x3002, 0x00, 0, 0}, //01
+		{0x3003, 0x00, 0, 0},
+		{0x3004, 0x10, 0, 0},
+		{0x3005, 0x00, 0, 0},
+		{0x3006, 0x00, 0, 0},
+		{0x3007, 0x00, 0, 0},
+		{0x3008, 0x00, 0, 0},
+		{0x3009, 0x02, 0, 0},//0x01, 0, 0},
+		{0x300A, 0xF0, 0, 0},
+		{0x300B, 0x00, 0, 0},
+		{0x300C, 0x00, 0, 0},
+		{0x300D, 0x00, 0, 0},
+		{0x300E, 0x01, 0, 0},
+		{0x300F, 0x00, 0, 0}, //01
+		{0x3010, 0x01, 0, 0},
+		{0x3011, 0x00, 0, 0},
+		{0x3012, 0x2C, 0, 0}, //F0
+		{0x3013, 0x01, 0, 0}, //00
+		{0x3014, 0x3C, 0, 0}, //00(gain low 8bits)
+		{0x3015, 0x00, 0, 0}, //00(gain high 2bits)
+		{0x3016, 0x09, 0, 0}, //08
+		{0x3017, 0x00, 0, 0},
+		{0x3018, 0x4C, 0, 0},
+		{0x3019, 0x04, 0, 0},
+		{0x301A, 0x00, 0, 0},
+		{0x301B, 0x94, 0, 0},
+		{0x301C, 0x11, 0, 0},
+		{0x301D, 0xC2, 0, 0}, //B2
+		{0x301E, 0x01, 0, 0},
+		{0x301F, 0x00, 0, 0},
+		{0x3020, 0x00, 0, 0}, //00
+		{0x3021, 0x01, 0, 0}, //00
+		{0x3022, 0x00, 0, 0}, //00
+		{0x3023, 0x00, 0, 0},
+		{0x3024, 0x00, 0, 0},
+		{0x3025, 0x00, 0, 0},
+		{0x3026, 0x00, 0, 0},
+		{0x3027, 0x00, 0, 0},
+		{0x3028, 0x00, 0, 0},
+		{0x3029, 0x00, 0, 0},
+		{0x302A, 0x00, 0, 0},
+		{0x302B, 0x00, 0, 0},
+		{0x302C, 0x00, 0, 0},
+		{0x302D, 0x00, 0, 0},
+		{0x302E, 0x00, 0, 0},
+		{0x302F, 0x00, 0, 0},
+		{0x3030, 0x00, 0, 0},
+		{0x3031, 0x00, 0, 0},
+		{0x3032, 0x00, 0, 0},
+		{0x3033, 0x00, 0, 0},
+		{0x3034, 0x00, 0, 0},
+		{0x3035, 0x00, 0, 0},
+		{0x3036, 0x10, 0, 0},
+		{0x3037, 0x00, 0, 0},
+		{0x3038, 0x00, 0, 0},
+		{0x3039, 0x00, 0, 0},
+		{0x303A, 0xD1, 0, 0},
+		{0x303B, 0x03, 0, 0},
+		{0x303C, 0x00, 0, 0},
+		{0x303D, 0x00, 0, 0},
+		{0x303E, 0x1C, 0, 0},
+		{0x303F, 0x05, 0, 0},
+		{0x3040, 0x01, 0, 0},
+		{0x3041, 0x00, 0, 0},
+		{0x3042, 0x01, 0, 0},
+		{0x3043, 0x01, 0, 0},
+		{0x3044, 0x01, 0, 0},
+		{0x3045, 0x01, 0, 0},
+		{0x3046, 0x00, 0, 0},
+		{0x3047, 0x08, 0, 0},
+		{0x3048, 0x00, 0, 0},
+		{0x3049, 0x0A, 0, 0}, //00
+		{0x304A, 0x00, 0, 0},
+		{0x304B, 0x00, 0, 0},
+		{0x304C, 0x00, 0, 0},
+		{0x304D, 0x00, 0, 0},
+		{0x304E, 0x00, 0, 0},
+		{0x304F, 0x00, 0, 0},
+		{0x3050, 0x26, 0, 0},
+		{0x3051, 0x00, 0, 0},
+		{0x3052, 0x01, 0, 0},
+		{0x3053, 0x00, 0, 0},
+		{0x3054, 0x66, 0, 0},//0x67, 0, 0},
+		{0x3055, 0x00, 0, 0},
+		{0x3056, 0x13, 0, 0},
+		{0x3057, 0x15, 0, 0},
+		{0x3058, 0x05, 0, 0},
+		{0x3059, 0x00, 0, 0},
+		{0x305A, 0x00, 0, 0},
+		{0x305B, 0x00, 0, 0},
+		{0x305C, 0x2C, 0, 0},
+		{0x305D, 0x00, 0, 0}, //10
+		{0x305E, 0x2C, 0, 0},
+		{0x305F, 0x00, 0, 0}, //10
+		{0x3060, 0x00, 0, 0},
+		{0x3061, 0x4A, 0, 0},
+		{0x3062, 0x41, 0, 0},
+		{0x3063, 0xB0, 0, 0},
+		{0x3064, 0x00, 0, 0},
+		{0x3065, 0x02, 0, 0},
+		{0x3066, 0x00, 0, 0},
+		{0x3067, 0x01, 0, 0},
+		{0x3068, 0x00, 0, 0},
+		{0x3069, 0x0C, 0, 0},
+		{0x306A, 0x19, 0, 0},
+		{0x306B, 0x00, 0, 0},
+		{0x306C, 0x00, 0, 0},
+		{0x306D, 0x64, 0, 0},
+		{0x306E, 0x00, 0, 0},
+		{0x306F, 0x00, 0, 0},
+		{0x3070, 0x02, 0, 0}, //01
+		{0x3071, 0x01, 0, 0}, //00
+		{0x3072, 0x00, 0, 0},
+		{0x3073, 0x00, 0, 0},
+		{0x3074, 0x00, 0, 0},
+		{0x3075, 0x00, 0, 0},
+		{0x3076, 0x00, 0, 0},
+		{0x3077, 0x00, 0, 0},
+		{0x3078, 0x00, 0, 0},
+		{0x3079, 0x00, 0, 0},
+		{0x307A, 0x00, 0, 0},
+		{0x307B, 0x00, 0, 0},
+		{0x307C, 0x00, 0, 0},
+		{0x307D, 0x00, 0, 0},
+		{0x307E, 0x00, 0, 0},
+		{0x307F, 0x00, 0, 0},
+		{0x3080, 0x00, 0, 0},
+		{0x3081, 0x00, 0, 0},
+		{0x3082, 0x00, 0, 0},
+		{0x3083, 0x00, 0, 0},
+		{0x3084, 0x00, 0, 0},
+		{0x3085, 0x00, 0, 0},
+		{0x3086, 0x00, 0, 0},
+		{0x3087, 0x00, 0, 0},
+		{0x3088, 0x00, 0, 0},
+		{0x3089, 0xFF, 0, 0},
+		{0x308A, 0x00, 0, 0},
+		{0x308B, 0x00, 0, 0},
+		{0x308C, 0x02, 0, 0},
+		{0x308D, 0x00, 0, 0},
+		{0x308E, 0x00, 0, 0},
+		{0x308F, 0x00, 0, 0},
+		{0x3090, 0x00, 0, 0},
+		{0x3091, 0x00, 0, 0},
+		{0x3092, 0x00, 0, 0},
+		{0x3093, 0x01, 0, 0},
+		{0x3094, 0x01, 0, 0},
+		{0x3095, 0x01, 0, 0},
+		{0x3096, 0x00, 0, 0},
+		{0x3097, 0x00, 0, 0},
+		{0x3098, 0x00, 0, 0},
+		{0x3099, 0x00, 0, 0},
+		{0x309A, 0x00, 0, 0},
+		{0x309B, 0x00, 0, 0},
+		{0x309C, 0x00, 0, 0},
+		{0x309D, 0x7D, 0, 0},
+		{0x309E, 0x22, 0, 0}, //20
+		{0x309F, 0x00, 0, 0},
+		{0x30A0, 0x00, 0, 0},
+		{0x30A1, 0x04, 0, 0},
+		{0x30A2, 0x5A, 0, 0},
+		{0x30A3, 0x5A, 0, 0},
+		{0x30A4, 0x2A, 0, 0},
+		{0x30A5, 0xFB, 0, 0}, //2A
+		{0x30A6, 0x02, 0, 0}, //00
+		{0x30A7, 0x22, 0, 0},
+		{0x30A8, 0x00, 0, 0},
+		{0x30A9, 0x00, 0, 0},
+		{0x30AA, 0x00, 0, 0},
+		{0x30AB, 0x10, 0, 0},
+		{0x30AC, 0x00, 0, 0},
+		{0x30AD, 0x10, 0, 0},
+		{0x30AE, 0x00, 0, 0},
+		{0x30AF, 0x10, 0, 0},
+		{0x30B0, 0x00, 0, 0},
+		{0x30B1, 0x10, 0, 0},
+		{0x30B2, 0x00, 0, 0},
+		{0x30B3, 0xFF, 0, 0}, //7F
+		{0x30B4, 0x01, 0, 0}, //02
+		{0x30B5, 0x42, 0, 0}, //41
+		{0x30B6, 0x00, 0, 0},
+		{0x30B7, 0x60, 0, 0},
+		{0x30B8, 0x10, 0, 0}, //12
+		{0x30B9, 0x12, 0, 0},
+		{0x30BA, 0x0F, 0, 0},
+		{0x30BB, 0x00, 0, 0},
+		{0x30BC, 0x00, 0, 0},
+		{0x30BD, 0x00, 0, 0},
+		{0x30BE, 0x00, 0, 0},
+		{0x30BF, 0x10, 0, 0},
+		{0x30C0, 0x00, 0, 0},
+		{0x30C1, 0x00, 0, 0},
+		{0x30C2, 0x01, 0, 0}, //03
+		{0x30C3, 0x04, 0, 0},
+		{0x30C4, 0x12, 0, 0},
+		{0x30C5, 0x10, 0, 0},
+		{0x30C6, 0x00, 0, 0},
+		{0x30C7, 0x00, 0, 0},
+		{0x30C8, 0x00, 0, 0},
+		{0x30C9, 0xFF, 0, 0},
+		{0x30CA, 0x03, 0, 0},
+		{0x30CB, 0xD8, 0, 0},
+		{0x30CC, 0x7D, 0, 0},
+		{0x30CD, 0x00, 0, 0},
+		{0x30CE, 0xFB, 0, 0},
+		{0x30CF, 0x0B, 0, 0},
+		{0x30D0, 0x01, 0, 0},
+		{0x30D1, 0xF0, 0, 0},
+		{0x30D2, 0x00, 0, 0},
+		{0x30D3, 0x0B, 0, 0},
+		{0x30D4, 0xF0, 0, 0},
+		{0x30D5, 0x00, 0, 0},
+		{0x30D6, 0x0B, 0, 0},
+		{0x30D7, 0xF0, 0, 0},
+		{0x30D8, 0x00, 0, 0},
+		{0x30D9, 0x13, 0, 0},
+		{0x30DA, 0x70, 0, 0},
+		{0x30DB, 0x01, 0, 0},
+		{0x30DC, 0x13, 0, 0},
+		{0x30DD, 0x70, 0, 0},
+		{0x30DE, 0x01, 0, 0},
+		{0x30DF, 0x00, 0, 0},
+		{0x30E0, 0x00, 0, 0},
+		{0x30E1, 0xFF, 0, 0},
+		{0x30E2, 0xFF, 0, 0},
+		{0x30E3, 0xFF, 0, 0},
+		{0x30E4, 0xFF, 0, 0},
+		{0x30E5, 0xFF, 0, 0},
+		{0x30E6, 0xFF, 0, 0},
+		{0x30E7, 0x00, 0, 0},
+		{0x30E8, 0x00, 0, 0},
+		{0x30E9, 0x00, 0, 0},
+		{0x30EA, 0x00, 0, 0},
+		{0x30EB, 0x01, 0, 0},
+		{0x30EC, 0x02, 0, 0},
+		{0x30ED, 0x43, 0, 0},
+		{0x30EE, 0x44, 0, 0},
+		{0x30EF, 0x00, 0, 0},
+		{0x30F0, 0xF0, 0, 0},
+		{0x30F1, 0x00, 0, 0},
+		{0x30F2, 0x00, 0, 0},
+		{0x30F3, 0x00, 0, 0},
+		{0x30F4, 0xF0, 0, 0},
+		{0x30F5, 0x00, 0, 0},
+		{0x30F6, 0x00, 0, 0},
+		{0x30F7, 0x00, 0, 0},
+		{0x30F8, 0xF0, 0, 0},
+		{0x30F9, 0x00, 0, 0},
+		{0x30FA, 0x00, 0, 0},
+		{0x30FB, 0x00, 0, 0},
+		{0x30FC, 0x00, 0, 0},
+		{0x30FD, 0x00, 0, 0},
+		{0x30FE, 0x00, 0, 0},
+		{0x3100, 0x00, 0, 0},
+		{0x3101, 0x00, 0, 0},
+		{0x3102, 0x80, 0, 0},
+		{0x3103, 0x00, 0, 0},
+		{0x3104, 0x00, 0, 0},
+		{0x3105, 0x00, 0, 0},
+		{0x3106, 0x00, 0, 0},
+		{0x3107, 0x00, 0, 0},
+		{0x3108, 0x00, 0, 0},
+		{0x3109, 0x00, 0, 0},
+		{0x310A, 0x00, 0, 0},
+		{0x310B, 0x04, 0, 0},
+		{0x310C, 0x00, 0, 0},
+		{0x310D, 0x00, 0, 0},
+		{0x310E, 0x01, 0, 0},
+		{0x310F, 0x0F, 0, 0}, //16
+		{0x3110, 0x0E, 0, 0}, //16
+		{0x3111, 0xE7, 0, 0}, //00
+		{0x3112, 0x9C, 0, 0}, //00
+		{0x3113, 0x83, 0, 0}, //00
+		{0x3114, 0x10, 0, 0}, //00
+		{0x3115, 0x42, 0, 0}, //00
+		{0x3116, 0xBF, 0, 0},
+		{0x3117, 0x03, 0, 0},
+		{0x3118, 0x44, 0, 0},
+		{0x3119, 0x44, 0, 0},
+		{0x311A, 0x00, 0, 0},
+		{0x311B, 0x06, 0, 0},
+		{0x311C, 0x88, 0, 0},
+		{0x311D, 0x0E, 0, 0},
+		{0x311E, 0x02, 0, 0},
+		{0x311F, 0x04, 0, 0},
+		{0x3120, 0x12, 0, 0},
+		{0x3121, 0x00, 0, 0},
+		{0x3122, 0x00, 0, 0},
+		{0x3123, 0x00, 0, 0},
+		{0x3124, 0x00, 0, 0},
+		{0x3125, 0x44, 0, 0},
+		{0x3126, 0x44, 0, 0},
+		{0x3127, 0x00, 0, 0},
+		{0x3128, 0x1E, 0, 0}, //00
+		{0x3129, 0x1A, 0, 0},
+		{0x312A, 0x00, 0, 0},
+		{0x312B, 0x08, 0, 0},
+		{0x312C, 0x00, 0, 0},
+		{0x312D, 0x00, 0, 0},
+		{0x312E, 0x00, 0, 0},
+		{0x312F, 0x00, 0, 0},
+		{0x3130, 0x00, 0, 0},
+		{0x3131, 0x00, 0, 0},
+		{0x3132, 0x30, 0, 0},
+		{0x3133, 0x00, 0, 0},
+		{0x3134, 0x00, 0, 0},
+		{0x3135, 0x00, 0, 0},
+		{0x3136, 0x00, 0, 0},
+		{0x3137, 0x00, 0, 0},
+		{0x3138, 0x08, 0, 0},
+		{0x3139, 0x00, 0, 0},
+		{0x313A, 0x60, 0, 0},
+		{0x313B, 0x03, 0, 0},
+		{0x313C, 0x08, 0, 0},
+		{0x313D, 0x00, 0, 0},
+		{0x313E, 0x00, 0, 0},
+		{0x313F, 0x00, 0, 0},
+		{0x3140, 0x02, 0, 0},
+		{0x3141, 0x87, 0, 0},
+		{0x3142, 0x00, 0, 0},
+		{0x3143, 0x00, 0, 0},
+		{0x3144, 0x07, 0, 0},
+		{0x3145, 0xFF, 0, 0},
+		{0x3146, 0x1F, 0, 0},
+		{0x3147, 0x00, 0, 0},
+		{0x3148, 0xFF, 0, 0},
+		{0x3149, 0x1F, 0, 0},
+		{0x314A, 0x00, 0, 0},
+		{0x314B, 0x00, 0, 0},
+		{0x314C, 0x00, 0, 0},
+		{0x314D, 0x02, 0, 0},
+		{0x314E, 0x87, 0, 0},
+		{0x314F, 0x00, 0, 0},
+		{0x3150, 0x00, 0, 0},
+		{0x3151, 0x00, 0, 0},
+		{0x3152, 0x07, 0, 0},
+		{0x3153, 0x40, 0, 0},
+		{0x3154, 0x00, 0, 0},
+		{0x3155, 0x00, 0, 0},
+		{0x3156, 0x00, 0, 0},
+		{0x3157, 0x00, 0, 0},
+		{0x3158, 0x00, 0, 0},
+		{0x3159, 0x00, 0, 0},
+		{0x315A, 0x00, 0, 0},
+		{0x315B, 0x00, 0, 0},
+		{0x315C, 0x00, 0, 0},
+		{0x315D, 0x00, 0, 0},
+		{0x315E, 0x12, 0, 0},
+		{0x315F, 0x80, 0, 0},
+		{0x3160, 0x00, 0, 0},
+		{0x3161, 0x70, 0, 0},
+		{0x3162, 0x07, 0, 0},
+		{0x3163, 0x00, 0, 0},
+		{0x3164, 0x12, 0, 0},
+		{0x3165, 0x80, 0, 0},
+		{0x3166, 0x00, 0, 0},
+		{0x3167, 0x02, 0, 0},
+		{0x3168, 0x00, 0, 0},
+		{0x3169, 0x00, 0, 0},
+		{0x316A, 0x10, 0, 0},
+		{0x316B, 0x04, 0, 0},
+		{0x316C, 0x00, 0, 0},
+		{0x316D, 0x00, 0, 0},
+		{0x316E, 0x00, 0, 0},
+		{0x316F, 0xFF, 0, 0},
+		{0x3170, 0x01, 0, 0},
+		{0x3171, 0x02, 0, 0},
+		{0x3172, 0x00, 0, 0},
+		{0x3173, 0x00, 0, 0},
+		{0x3174, 0x05, 0, 0},
+		{0x3175, 0x00, 0, 0},
+		{0x3176, 0x00, 0, 0},
+		{0x3177, 0x00, 0, 0},
+		{0x3178, 0x05, 0, 0},
+		{0x3179, 0x00, 0, 0},
+		{0x317A, 0xFB, 0, 0},
+		{0x317B, 0x77, 0, 0},
+		{0x317C, 0x01, 0, 0},
+		{0x317D, 0x17, 0, 0},
+		{0x317E, 0x00, 0, 0},
+		{0x317F, 0x00, 0, 0},
+		{0x3180, 0x00, 0, 0},
+		{0x3181, 0x00, 0, 0},
+		{0x3182, 0x00, 0, 0},
+		{0x3183, 0x00, 0, 0},
+		{0x3184, 0x04, 0, 0},
+		{0x3185, 0x00, 0, 0},
+		{0x3186, 0x13, 0, 0},
+		{0x3187, 0x00, 0, 0},
+		{0x3188, 0x2C, 0, 0},
+		{0x3189, 0x00, 0, 0},
+		{0x318A, 0xFC, 0, 0},
+		{0x318B, 0x03, 0, 0},
+		{0x318C, 0xFC, 0, 0},
+		{0x318D, 0x03, 0, 0},
+		{0x318E, 0xFC, 0, 0},
+		{0x318F, 0x03, 0, 0},
+		{0x3190, 0x0A, 0, 0},
+		{0x3191, 0x00, 0, 0},
+		{0x3192, 0x00, 0, 0},
+		{0x3193, 0x04, 0, 0},
+		{0x3194, 0x08, 0, 0},
+		{0x3195, 0x10, 0, 0},
+		{0x3196, 0x11, 0, 0},
+		{0x3197, 0x00, 0, 0},
+		{0x3198, 0x7C, 0, 0},
+		{0x3199, 0x00, 0, 0},
+		{0x319A, 0xD0, 0, 0},
+		{0x319B, 0x07, 0, 0},
+		{0x319C, 0x0E, 0, 0},
+		{0x319D, 0x04, 0, 0},
+		{0x319E, 0x0D, 0, 0},
+		{0x319F, 0x04, 0, 0},
+		{0x31A0, 0x00, 0, 0},
+		{0x31A1, 0x00, 0, 0},
+		{0x31A2, 0x00, 0, 0},
+		{0x31A3, 0x04, 0, 0},
+		{0x31A4, 0x00, 0, 0},
+		{0x31A5, 0x4A, 0, 0},
+		{0x31A6, 0x01, 0, 0},
+		{0x31A7, 0x4D, 0, 0},
+		{0x31A8, 0x01, 0, 0},
+		{0x31A9, 0x00, 0, 0},
+		{0x31AA, 0x03, 0, 0},
+		{0x31AB, 0x03, 0, 0},
+		{0x31AC, 0x00, 0, 0},
+		{0x31AD, 0x00, 0, 0},
+		{0x31AE, 0x00, 0, 0},
+		{0x31AF, 0x02, 0, 0},
+		{0x31B0, 0x01, 0, 0},
+		{0x31B1, 0x00, 0, 0},
+		{0x31B2, 0x00, 0, 0},
+		{0x31B3, 0x00, 0, 0},
+		{0x31B4, 0x00, 0, 0},
+		{0x31B5, 0x00, 0, 0},
+		{0x31B6, 0x00, 0, 0},
+		{0x31B7, 0x00, 0, 0},
+		{0x31B8, 0x00, 0, 0},
+		{0x31B9, 0x0D, 0, 0},
+		{0x31BA, 0x04, 0, 0},
+		{0x31BB, 0x00, 0, 0},
+		{0x31BC, 0x00, 0, 0},
+		{0x31BD, 0x00, 0, 0},
+		{0x31BE, 0x00, 0, 0},
+		{0x31BF, 0x00, 0, 0},
+		{0x31C0, 0x00, 0, 0},
+		{0x31C1, 0x1F, 0, 0},
+		{0x31C2, 0x53, 0, 0},
+		{0x31C3, 0x06, 0, 0},
+		{0x31C4, 0x16, 0, 0},
+		{0x31C5, 0x00, 0, 0},
+		{0x31C6, 0x00, 0, 0},
+		{0x31C7, 0x00, 0, 0},
+		{0x31C8, 0x00, 0, 0},
+		{0x31C9, 0x00, 0, 0},
+		{0x31CA, 0x00, 0, 0},
+		{0x31CB, 0x00, 0, 0},
+		{0x31CC, 0x00, 0, 0},
+		{0x31CD, 0x00, 0, 0},
+		{0x31CE, 0x00, 0, 0},
+		{0x31CF, 0x00, 0, 0},
+		{0x31D0, 0x00, 0, 0},
+		{0x31D1, 0x00, 0, 0},
+		{0x31D2, 0x00, 0, 0},
+		{0x31D3, 0x00, 0, 0},
+		{0x31D4, 0x00, 0, 0},
+		{0x31D5, 0x00, 0, 0},
+		{0x31D6, 0x00, 0, 0},
+		{0x31D7, 0x00, 0, 0},
+		{0x31D8, 0x00, 0, 0},
+		{0x31D9, 0x00, 0, 0},
+		{0x31DA, 0x00, 0, 0},
+		{0x31DB, 0x00, 0, 0},
+		{0x31DC, 0x00, 0, 0},
+		{0x31DD, 0x00, 0, 0},
+		{0x31DE, 0x00, 0, 0},
+		{0x31DF, 0x00, 0, 0},
+		{0x31E0, 0x00, 0, 0},
+		{0x31E1, 0x00, 0, 0},
+		{0x31E2, 0x00, 0, 0},
+		{0x31E3, 0x00, 0, 0},
+		{0x31E4, 0x00, 0, 0},
+		{0x31E5, 0x00, 0, 0},
+		{0x31E6, 0x00, 0, 0},
+		{0x31E7, 0x00, 0, 0},
+		{0x31E8, 0x01, 0, 0},
+		{0x31E9, 0x53, 0, 0},
+		{0x31EA, 0x0A, 0, 0},
+		{0x31EB, 0xD7, 0, 0},
+		{0x31EC, 0x0F, 0, 0},
+		{0x31ED, 0x38, 0, 0}, //0E
+		{0x31EE, 0x00, 0, 0},
+		{0x31EF, 0x00, 0, 0},
+		{0x31F0, 0x00, 0, 0},
+		{0x31F1, 0x00, 0, 0},
+		{0x31F2, 0x00, 0, 0},
+		{0x31F3, 0x78, 0, 0},
+		{0x31F4, 0x04, 0, 0},
+		{0x31F5, 0x00, 0, 0},
+		{0x31F6, 0x00, 0, 0},
+		{0x31F7, 0x00, 0, 0},
+		{0x31F8, 0x00, 0, 0},
+		{0x31F9, 0x00, 0, 0},
+		{0x31FA, 0x00, 0, 0},
+		{0x31FB, 0x00, 0, 0},
+		{0x31FC, 0x00, 0, 0},
+		{0x31FD, 0x00, 0, 0},
+		{0x31FE, 0x00, 0, 0},
+		{0x3200, 0xAA, 0, 0},
+		{0x3201, 0x00, 0, 0},
+		{0x3202, 0x00, 0, 0},
+		{0x3203, 0x5A, 0, 0},
+		{0x3204, 0xE0, 0, 0},
+		{0x3205, 0x15, 0, 0},
+		{0x3206, 0x56, 0, 0},
+		{0x3207, 0xF0, 0, 0},
+		{0x3208, 0x23, 0, 0},
+		{0x3209, 0xFF, 0, 0},
+		{0x320A, 0x0F, 0, 0},
+		{0x320B, 0x00, 0, 0},
+		{0x320C, 0xCF, 0, 0},//0xD4, 0, 0},
+		{0x320D, 0x80, 0, 0},
+		{0x320E, 0x05, 0, 0},
+		{0x320F, 0x32, 0, 0},
+		{0x3210, 0x90, 0, 0},
+		{0x3211, 0x19, 0, 0},
+		{0x3212, 0x2C, 0, 0},
+		{0x3213, 0x41, 0, 0},
+		{0x3214, 0x06, 0, 0},
+		{0x3215, 0x13, 0, 0},
+		{0x3216, 0x50, 0, 0},
+		{0x3217, 0x13, 0, 0},
+		{0x3218, 0x01, 0, 0},
+		{0x3219, 0x40, 0, 0},
+		{0x321A, 0x08, 0, 0},
+		{0x321B, 0x31, 0, 0},
+		{0x321C, 0x02, 0, 0},
+		{0x321D, 0x30, 0, 0},
+		{0x321E, 0x00, 0, 0},
+		{0x321F, 0x00, 0, 0},
+		{0x3220, 0x32, 0, 0},
+		{0x3221, 0x06, 0, 0},
+		{0x3222, 0x71, 0, 0},
+		{0x3223, 0x10, 0, 0},
+		{0x3224, 0x00, 0, 0},
+		{0x3225, 0x21, 0, 0},
+		{0x3226, 0x05, 0, 0},
+		{0x3227, 0x00, 0, 0},
+		{0x3228, 0x00, 0, 0},
+		{0x3229, 0x00, 0, 0},
+		{0x322A, 0x01, 0, 0},
+		{0x322B, 0x00, 0, 0},
+		{0x322C, 0x00, 0, 0},
+		{0x322D, 0x03, 0, 0},
+		{0x322E, 0x06, 0, 0},
+		{0x322F, 0x40, 0, 0},
+		{0x3230, 0x03, 0, 0},
+		{0x3231, 0x06, 0, 0},
+		{0x3232, 0x60, 0, 0},
+		{0x3233, 0x1A, 0, 0},
+		{0x3234, 0x00, 0, 0},
+		{0x3235, 0xD7, 0, 0},
+		{0x3236, 0x50, 0, 0},
+		{0x3237, 0x10, 0, 0},
+		{0x3238, 0xD9, 0, 0},
+		{0x3239, 0xE0, 0, 0},
+		{0x323A, 0x0F, 0, 0},
+		{0x323B, 0x00, 0, 0},
+		{0x323C, 0xD9, 0, 0},
+		{0x323D, 0xE0, 0, 0},
+		{0x323E, 0x0F, 0, 0},
+		{0x323F, 0x00, 0, 0},
+		{0x3240, 0xDA, 0, 0},
+		{0x3241, 0x80, 0, 0},
+		{0x3242, 0x0F, 0, 0},
+		{0x3243, 0x00, 0, 0},
+		{0x3244, 0xF9, 0, 0},
+		{0x3245, 0xD0, 0, 0},
+		{0x3246, 0x0F, 0, 0},
+		{0x3247, 0x00, 0, 0},
+		{0x3248, 0x07, 0, 0},
+		{0x3249, 0x40, 0, 0},
+		{0x324A, 0x1A, 0, 0},
+		{0x324B, 0x07, 0, 0},
+		{0x324C, 0x40, 0, 0},//0xD0, 0, 0},
+		{0x324D, 0x03, 0, 0},//0x01, 0, 0},
+		{0x324E, 0xFF, 0, 0},
+		{0x324F, 0xFF, 0, 0},
+		{0x3250, 0xFF, 0, 0},
+		{0x3251, 0x00, 0, 0},
+		{0x3252, 0xD8, 0, 0},
+		{0x3253, 0x40, 0, 0},
+		{0x3254, 0x10, 0, 0},
+		{0x3255, 0x00, 0, 0},
+		{0x3256, 0xD9, 0, 0},
+		{0x3257, 0xE0, 0, 0},
+		{0x3258, 0x0F, 0, 0},
+		{0x3259, 0xFF, 0, 0},
+		{0x325A, 0xFF, 0, 0},
+		{0x325B, 0xFF, 0, 0},
+		{0x325C, 0x00, 0, 0},
+		{0x325D, 0x08, 0, 0},
+		{0x325E, 0xE0, 0, 0},
+		{0x325F, 0x19, 0, 0},
+		{0x3260, 0x08, 0, 0},
+		{0x3261, 0xE0, 0, 0},//0x70, 0, 0},
+		{0x3262, 0x02, 0, 0},//0x01, 0, 0},
+		{0x3263, 0x00, 0, 0},
+		{0x3264, 0xFF, 0, 0},
+		{0x3265, 0x30, 0, 0},
+		{0x3266, 0x10, 0, 0},
+		{0x3267, 0xFF, 0, 0},
+		{0x3268, 0xFF, 0, 0},
+		{0x3269, 0xFF, 0, 0},
+		{0x326A, 0x00, 0, 0},
+		{0x326B, 0x9F, 0, 0},
+		{0x326C, 0x31, 0, 0},
+		{0x326D, 0x1A, 0, 0},
+		{0x326E, 0x2F, 0, 0},//0x18, 0, 0},
+		{0x326F, 0x30, 0, 0},//0xC0, 0, 0},
+		{0x3270, 0x03, 0, 0},//0x01, 0, 0},
+		{0x3271, 0x00, 0, 0},
+		{0x3272, 0xF9, 0, 0},
+		{0x3273, 0x00, 0, 0},
+		{0x3274, 0x1A, 0, 0},
+		{0x3275, 0x00, 0, 0},
+		{0x3276, 0x00, 0, 0},
+		{0x3277, 0x00, 0, 0},
+		{0x3278, 0x00, 0, 0},
+		{0x3279, 0x00, 0, 0},
+		{0x327A, 0x00, 0, 0},
+		{0x327B, 0x00, 0, 0},
+		{0x327C, 0x00, 0, 0},
+		{0x327D, 0x00, 0, 0},
+		{0x327E, 0x90, 0, 0},
+		{0x327F, 0x1A, 0, 0},
+		{0x3280, 0xFF, 0, 0},
+		{0x3281, 0xFF, 0, 0},
+		{0x3282, 0xFF, 0, 0},
+		{0x3283, 0x00, 0, 0},
+		{0x3284, 0x05, 0, 0},
+		{0x3285, 0x90, 0, 0},
+		{0x3286, 0x1A, 0, 0},
+		{0x3287, 0xFF, 0, 0},
+		{0x3288, 0xFF, 0, 0},
+		{0x3289, 0xFF, 0, 0},
+		{0x328A, 0x00, 0, 0},
+		{0x328B, 0x83, 0, 0},
+		{0x328C, 0x00, 0, 0},
+		{0x328D, 0x1A, 0, 0},
+		{0x328E, 0x00, 0, 0},
+		{0x328F, 0x00, 0, 0},
+		{0x3290, 0x00, 0, 0},
+		{0x3291, 0x00, 0, 0},
+		{0x3292, 0x00, 0, 0},
+		{0x3293, 0x00, 0, 0},
+		{0x3294, 0x00, 0, 0},
+		{0x3295, 0x00, 0, 0},
+		{0x3296, 0x00, 0, 0},
+		{0x3297, 0x88, 0, 0},
+		{0x3298, 0x00, 0, 0},//0x40, 0, 0},
+		{0x3299, 0x08, 0, 0},
+		{0x329A, 0x12, 0, 0},//0xE0, 0, 0},
+		{0x329B, 0xF1, 0, 0},//0xC0, 0, 0},
+		{0x329C, 0x0C, 0, 0},//0x0D, 0, 0},
+		{0x329D, 0x00, 0, 0},
+		{0x329E, 0x0B, 0, 0},
+		{0x329F, 0x80, 0, 0},
+		{0x32A0, 0x00, 0, 0},
+		{0x32A1, 0x0B, 0, 0},
+		{0x32A2, 0x80, 0, 0},
+		{0x32A3, 0x00, 0, 0},
+		{0x32A4, 0x7A, 0, 0},
+		{0x32A5, 0x40, 0, 0},
+		{0x32A6, 0x00, 0, 0},
+		{0x32A7, 0x00, 0, 0},
+		{0x32A8, 0x04, 0, 0},
+		{0x32A9, 0xC0, 0, 0},
+		{0x32AA, 0x06, 0, 0},
+		{0x32AB, 0x00, 0, 0},
+		{0x32AC, 0x04, 0, 0},
+		{0x32AD, 0x10, 0, 0},
+		{0x32AE, 0x08, 0, 0},
+		{0x32AF, 0x00, 0, 0},
+		{0x32B0, 0x04, 0, 0},
+		{0x32B1, 0x10, 0, 0},
+		{0x32B2, 0x08, 0, 0},
+		{0x32B3, 0x00, 0, 0},
+		{0x32B4, 0xD9, 0, 0},
+		{0x32B5, 0x00, 0, 0},
+		{0x32B6, 0x00, 0, 0},
+		{0x32B7, 0x00, 0, 0},
+		{0x32B8, 0x08, 0, 0},
+		{0x32B9, 0x40, 0, 0},
+		{0x32BA, 0x00, 0, 0},
+		{0x32BB, 0x00, 0, 0},
+		{0x32BC, 0x84, 0, 0},
+		{0x32BD, 0x10, 0, 0},
+		{0x32BE, 0x08, 0, 0},
+		{0x32BF, 0x00, 0, 0},
+		{0x32C0, 0x08, 0, 0},
+		{0x32C1, 0x50, 0, 0},
+		{0x32C2, 0x00, 0, 0},
+		{0x32C3, 0xDC, 0, 0},
+		{0x32C4, 0x90, 0, 0},
+		{0x32C5, 0x0D, 0, 0},
+		{0x32C6, 0x00, 0, 0},
+		{0x32C7, 0x08, 0, 0},
+		{0x32C8, 0x50, 0, 0},
+		{0x32C9, 0x00, 0, 0},
+		{0x32CA, 0xA0, 0, 0},
+		{0x32CB, 0x01, 0, 0},
+		{0x32CC, 0x05, 0, 0},
+		{0x32CD, 0x00, 0, 0},
+		{0x32CE, 0x50, 0, 0},
+		{0x32CF, 0x00, 0, 0},
+		{0x32D0, 0x1A, 0, 0},
+		{0x32D1, 0x01, 0, 0},
+		{0x32D2, 0x00, 0, 0},
+		{0x32D3, 0x00, 0, 0},
+		{0x32D4, 0x00, 0, 0},
+		{0x32D5, 0x00, 0, 0},
+		{0x32D6, 0x9E, 0, 0},
+		{0x32D7, 0x01, 0, 0},
+		{0x32D8, 0x09, 0, 0},
+		{0x32D9, 0x00, 0, 0},
+		{0x32DA, 0x9A, 0, 0},
+		{0x32DB, 0xF0, 0, 0},
+		{0x32DC, 0x0C, 0, 0},
+		{0x32DD, 0x30, 0, 0},
+		{0x32DE, 0x41, 0, 0},
+		{0x32DF, 0x19, 0, 0},
+		{0x32E0, 0x00, 0, 0},
+		{0x32E1, 0x1E, 0, 0},
+		{0x32E2, 0x30, 0, 0},
+		{0x32E3, 0x05, 0, 0},
+		{0x32E4, 0x5C, 0, 0},
+		{0x32E5, 0x00, 0, 0},
+		{0x32E6, 0x0C, 0, 0},
+		{0x32E7, 0x96, 0, 0},
+		{0x32E8, 0x30, 0, 0},
+		{0x32E9, 0x0D, 0, 0},
+		{0x32EA, 0x2C, 0, 0},
+		{0x32EB, 0x81, 0, 0},
+		{0x32EC, 0x19, 0, 0},
+		{0x32ED, 0x00, 0, 0},
+		{0x32EE, 0x1A, 0, 0},
+		{0x32EF, 0x70, 0, 0},
+		{0x32F0, 0x05, 0, 0},
+		{0x32F1, 0x58, 0, 0},
+		{0x32F2, 0x40, 0, 0},
+		{0x32F3, 0x0C, 0, 0},
+		{0x32F4, 0x8C, 0, 0},
+		{0x32F5, 0x20, 0, 0},
+		{0x32F6, 0x09, 0, 0},
+		{0x32F7, 0x00, 0, 0},
+		{0x32F8, 0x84, 0, 0},
+		{0x32F9, 0x40, 0, 0},
+		{0x32FA, 0x07, 0, 0},
+		{0x32FB, 0x1A, 0, 0},
+		{0x32FC, 0xA1, 0, 0},
+		{0x32FD, 0x10, 0, 0},
+		{0x32FE, 0x00, 0, 0},
+		{0x3300, 0x00, 0, 0},
+		{0x3301, 0x85, 0, 0},
+		{0x3302, 0x50, 0, 0},
+		{0x3303, 0x07, 0, 0},
+		{0x3304, 0x1B, 0, 0},
+		{0x3305, 0xB1, 0, 0},
+		{0x3306, 0x10, 0, 0},
+		{0x3307, 0x00, 0, 0},
+		{0x3308, 0x7C, 0, 0},
+		{0x3309, 0xC0, 0, 0},
+		{0x330A, 0x08, 0, 0},
+		{0x330B, 0x12, 0, 0},
+		{0x330C, 0x21, 0, 0},
+		{0x330D, 0x12, 0, 0},
+		{0x330E, 0x00, 0, 0},
+		{0x330F, 0x7D, 0, 0},
+		{0x3310, 0xD0, 0, 0},
+		{0x3311, 0x08, 0, 0},
+		{0x3312, 0x13, 0, 0},
+		{0x3313, 0x31, 0, 0},
+		{0x3314, 0x12, 0, 0},
+		{0x3315, 0x00, 0, 0},
+		{0x3316, 0x7E, 0, 0},
+		{0x3317, 0x20, 0, 0},
+		{0x3318, 0x08, 0, 0},
+		{0x3319, 0x14, 0, 0},
+		{0x331A, 0x81, 0, 0},
+		{0x331B, 0x11, 0, 0},
+		{0x331C, 0x00, 0, 0},
+		{0x331D, 0x86, 0, 0},
+		{0x331E, 0xA0, 0, 0},
+		{0x331F, 0x08, 0, 0},
+		{0x3320, 0x1C, 0, 0},
+		{0x3321, 0x01, 0, 0},
+		{0x3322, 0x12, 0, 0},
+		{0x3323, 0x00, 0, 0},
+		{0x3324, 0x8C, 0, 0},
+		{0x3325, 0x20, 0, 0},
+		{0x3326, 0x09, 0, 0},
+		{0x3327, 0x00, 0, 0},
+		{0x3328, 0xCF, 0, 0},
+		{0x3329, 0x10, 0, 0},
+		{0x332A, 0x0D, 0, 0},
+		{0x332B, 0x00, 0, 0},
+		{0x332C, 0x53, 0, 0},
+		{0x332D, 0x50, 0, 0},
+		{0x332E, 0x05, 0, 0},
+		{0x332F, 0x00, 0, 0},
+		{0x3330, 0x01, 0, 0},
+		{0x3331, 0x20, 0, 0},
+		{0x3332, 0x00, 0, 0},
+		{0x3333, 0x00, 0, 0},
+		{0x3334, 0x45, 0, 0},
+		{0x3335, 0xB1, 0, 0},
+		{0x3336, 0x19, 0, 0},
+		{0x3337, 0x01, 0, 0},
+		{0x3338, 0x00, 0, 0},
+		{0x3339, 0x00, 0, 0},
+		{0x333A, 0x00, 0, 0},
+		{0x333B, 0x00, 0, 0},
+		{0x333C, 0x00, 0, 0},
+		{0x333D, 0x00, 0, 0},
+		{0x333E, 0x00, 0, 0},
+		{0x333F, 0x00, 0, 0},
+		{0x3340, 0x00, 0, 0},
+		{0x3341, 0x11, 0, 0},
+		{0x3342, 0x11, 0, 0},
+		{0x3343, 0x00, 0, 0},
+		{0x3344, 0x20, 0, 0},/////*****?
+		{0x3345, 0x00, 0, 0},
+		{0x3346, 0x03, 0, 0},
+		{0x3347, 0x00, 0, 0},
+		{0x3348, 0x00, 0, 0},
+		{0x3349, 0x00, 0, 0},
+		{0x334A, 0x00, 0, 0},
+		{0x334B, 0x00, 0, 0},
+		{0x334C, 0x00, 0, 0},
+		{0x334D, 0x00, 0, 0},
+		{0x334E, 0x0F, 0, 0},
+		{0x334F, 0x20, 0, 0},
+		{0x3350, 0x00, 0, 0},
+		{0x3351, 0x0F, 0, 0},
+		{0x3352, 0x01, 0, 0},
+		{0x3353, 0x0E, 0, 0},
+		{0x3354, 0x01, 0, 0},
+		{0x3355, 0x00, 0, 0},
+		{0x3356, 0x00, 0, 0},
+		{0x3357, 0xD1, 0, 0},
+		{0x3358, 0x03, 0, 0},
+		{0x3359, 0x01, 0, 0},
+		{0x335A, 0x00, 0, 0},
+		{0x335B, 0x40, 0, 0},
+		{0x335C, 0x00, 0, 0},
+		{0x335D, 0x00, 0, 0},
+		{0x335E, 0x00, 0, 0},
+		{0x335F, 0x00, 0, 0},
+		{0x3360, 0x00, 0, 0},
+		{0x3361, 0x00, 0, 0},
+		{0x3362, 0x00, 0, 0},
+		{0x3363, 0x00, 0, 0},
+		{0x3364, 0x00, 0, 0},
+		{0x3365, 0x16, 0, 0},
+		{0x3366, 0x00, 0, 0},
+		{0x3367, 0x00, 0, 0},
+		{0x3368, 0x00, 0, 0},
+		{0x3369, 0x00, 0, 0},
+		{0x336A, 0x00, 0, 0},
+		{0x336B, 0x27, 0, 0},
+		{0x336C, 0x1F, 0, 0},
+		{0x336D, 0x03, 0, 0},
+		{0x336E, 0x00, 0, 0},
+		{0x336F, 0x00, 0, 0},
+		{0x3370, 0x00, 0, 0},
+		{0x3371, 0x00, 0, 0},
+		{0x3372, 0x00, 0, 0},
+		{0x3373, 0x00, 0, 0},
+		{0x3374, 0x00, 0, 0},
+		{0x3375, 0x00, 0, 0},
+		{0x3376, 0x00, 0, 0},
+		{0x3377, 0x00, 0, 0},
+		{0x3378, 0x00, 0, 0},
+		{0x3379, 0x00, 0, 0},
+		{0x337A, 0x00, 0, 0},
+		{0x337B, 0x00, 0, 0},
+		{0x337C, 0x00, 0, 0},
+		{0x337D, 0x0C, 0, 0},
+		{0x337E, 0x0C, 0, 0},
+		{0x337F, 0x03, 0, 0},
+		{0x3380, 0x00, 0, 0},
+		{0x3381, 0x1B, 0, 0},//{0x36, 0, 0},no need for p
+		{0x3382, 0x57, 0, 0},
+		{0x3383, 0x0F, 0, 0},
+		{0x3384, 0x27, 0, 0},
+		{0x3385, 0x0F, 0, 0},
+		{0x3386, 0x0F, 0, 0},
+		{0x3387, 0x07, 0, 0},
+		{0x3388, 0x37, 0, 0},
+		{0x3389, 0x1F, 0, 0},
+		{0x338A, 0x30, 0, 0},
+		{0x338B, 0x30, 0, 0},
+		{0x338C, 0x30, 0, 0},
+		{0x338D, 0x3D, 0, 0},//0x67, 0, 0},no need for p
+		{0x338E, 0x01, 0, 0},//0x03, 0, 0},no need for p
+		{0x338F, 0xBA, 0, 0},
+		{0x3390, 0x2C, 0, 0},
+		{0x3391, 0x18, 0, 0},
+		{0x3392, 0x08, 0, 0},
+		{0x3393, 0x08, 0, 0},
+		{0x3394, 0x01, 0, 0},
+		{0x3395, 0x00, 0, 0},
+		{0x3396, 0x00, 0, 0},
+		{0x3397, 0x00, 0, 0},
+		{0x3398, 0x00, 0, 0},
+		{0x3399, 0x24, 0, 0},
+		{0x339A, 0x02, 0, 0},
+		{0x339B, 0x01, 0, 0},
+		{0x339C, 0x01, 0, 0},
+		{0x339D, 0x00, 0, 0},
+		{0x339E, 0x01, 0, 0},
+		{0x339F, 0xF0, 0, 0},
+		{0x33A0, 0x00, 0, 0},
+		{0x33A1, 0x0C, 0, 0},
+		{0x33A2, 0x0C, 0, 0},
+		{0x33A3, 0x00, 0, 0},
+		{0x33A4, 0x00, 0, 0},
+		{0x33A5, 0x00, 0, 0},
+		{0x33A6, 0xF0, 0, 0},
+		{0x33A7, 0x00, 0, 0},
+		{0x33A8, 0x01, 0, 0},
+		{0x33A9, 0x00, 0, 0},
+		{0x33AA, 0x00, 0, 0},
+		{0x33AB, 0x00, 0, 0},
+		{0x33AC, 0x00, 0, 0},
+		{0x33AD, 0xF0, 0, 0},
+		{0x33AE, 0x00, 0, 0},
+		{0x33AF, 0x01, 0, 0},
+		{0x33B0, 0x00, 0, 0},
+		{0x33B1, 0xF0, 0, 0},
+		{0x33B2, 0x00, 0, 0},
+		{0x33B3, 0x00, 0, 0},
+		{0x33B4, 0x00, 0, 0},
+		{0x33B5, 0x00, 0, 0},
+		{0x33B6, 0x00, 0, 0},
+		{0x33B7, 0x00, 0, 0},
+		{0x33B8, 0x00, 0, 0},
+		{0x33B9, 0x00, 0, 0},
+		{0x33BA, 0x00, 0, 0},
+		{0x33BB, 0x00, 0, 0},
+		{0x33BC, 0x00, 0, 0},
+		{0x33BD, 0x00, 0, 0},
+		{0x33BE, 0x00, 0, 0},
+		{0x33BF, 0x00, 0, 0},
+		{0x33C0, 0x00, 0, 0},
+		{0x33C1, 0x00, 0, 0},
+		{0x33C2, 0x00, 0, 0},
+		{0x33C3, 0x00, 0, 0},
+		{0x33C4, 0x00, 0, 0},
+		{0x33C5, 0x00, 0, 0},
+		{0x33C6, 0x00, 0, 0},
+		{0x33C7, 0x00, 0, 0},
+		{0x33C8, 0x00, 0, 0},
+		{0x33C9, 0x65, 0, 0},
+		{0x33CA, 0x04, 0, 0},
+		{0x33CB, 0x00, 0, 0},
+		{0x33CC, 0x98, 0, 0},
+		{0x33CD, 0x08, 0, 0},
+		{0x33CE, 0x00, 0, 0},
+		{0x33CF, 0x00, 0, 0},
+		{0x33D0, 0x00, 0, 0},
+		{0x33D1, 0x00, 0, 0},
+		{0x33D2, 0x9B, 0, 0},
+		{0x33D3, 0x07, 0, 0},
+		{0x33D4, 0xC8, 0, 0},
+		{0x33D5, 0x04, 0, 0},
+		{0x33D6, 0x9C, 0, 0},
+		{0x33D7, 0x07, 0, 0},
+		{0x33D8, 0xC9, 0, 0},
+		{0x33D9, 0x04, 0, 0},
+		{0x33DA, 0x00, 0, 0},
+		{0x33DB, 0x00, 0, 0},
+		{0x33DC, 0x00, 0, 0},
+		{0x33DD, 0x00, 0, 0},
+		{0x33DE, 0x00, 0, 0},
+		{0x33DF, 0x00, 0, 0},
+		{0x33E0, 0x1B, 0, 0},
+		{0x33E1, 0x05, 0, 0},
+		{0x33E2, 0xD0, 0, 0},
+		{0x33E3, 0x03, 0, 0},
+		{0x33E4, 0x7C, 0, 0},
+		{0x33E5, 0x01, 0, 0},
+		{0x33E6, 0x31, 0, 0},
+		{0x33E7, 0x01, 0, 0},
+		{0x33E8, 0x1C, 0, 0},
+		{0x33E9, 0x05, 0, 0},
+		{0x33EA, 0xD1, 0, 0},
+		{0x33EB, 0x03, 0, 0},
+		{0x33EC, 0x01, 0, 0},
+		{0x33ED, 0x03, 0, 0},
+		{0x33EE, 0x00, 0, 0},
+		{0x33EF, 0x00, 0, 0},
+		{0x33F0, 0x0B, 0, 0},
+		{0x33F1, 0x00, 0, 0},
+		{0x33F2, 0x0C, 0, 0},
+		{0x33F3, 0x00, 0, 0},
+		{0x33F4, 0x00, 0, 0},
+		{0x33F5, 0x00, 0, 0},
+		{0x33F6, 0x0F, 0, 0},
+		{0x33F7, 0x00, 0, 0},
+		{0x33F8, 0x06, 0, 0},
+		{0x33F9, 0x00, 0, 0},
+		{0x33FA, 0x10, 0, 0},
+		{0x33FB, 0x00, 0, 0},
+		{0x33FC, 0x00, 0, 0},
+		{0x33FD, 0x00, 0, 0},
+		{0x33FE, 0x00, 0, 0},
+		{0x0000, 0x00, 0, 0},
+};
+
+static struct reg_value imx224_settings[] = {
+	{0x3005, 0x00, 0, 0},
+	{0x3006, 0x00, 0, 0},
+	{0x3007, 0x02, 0, 0},	
+	{0x3009, 0x02, 0, 0}, //0x02 for 30 fps
+	{0x3018, 0x4C, 0, 0},
+	{0x3019, 0x04, 0, 0},
+	{0x301B, 0x94, 0, 0}, //0x94
+	{0x301C, 0x11, 0, 0}, //0x11
+	{0x3044, 0x01, 0, 0}, 
+	{0x3054, 0x66, 0, 0},
+	
+	{0x305C, 0x2C, 0, 0},
+	{0x305D, 0x00, 0, 0},
+	{0x305E, 0x2C, 0, 0},
+	{0x305F, 0x00, 0, 0},
+	{0x3344, 0x10, 0, 0}, //0x10 for 30 fps and 60 fps
+	{0x3346, 0x01, 0, 0}, //0x01 for 2 lanes
+	{0x3353, 0x0E, 0, 0},
+	{0x3357, 0xD1, 0, 0},
+	{0x3358, 0x03, 0, 0},
+	{0x336B, 0x37, 0, 0}, //0x37 for 30 fps 2 lanes and 60 fps 4 lanes
+
+	{0x336C, 0x1F, 0, 0},
+	{0x337D, 0x0A, 0, 0},
+	{0x337E, 0x0A, 0, 0},
+	{0x337F, 0x01, 0, 0}, //0x01 for 2 lanes
+	{0x3380, 0x00, 0, 0},
+	{0x3381, 0x1B, 0, 0},
+	{0x3382, 0x5F, 0, 0}, //0x5F
+	{0x3383, 0x17, 0, 0}, //0x17
+	{0x3384, 0x37, 0, 0}, //0x37
+	{0x3385, 0x17, 0, 0}, //0x17
+	
+	{0x3386, 0x17, 0, 0}, //0x17
+	{0x3387, 0x17, 0, 0}, //0x17
+	{0x3388, 0x4F, 0, 0}, //0x4F
+	{0x3389, 0x27, 0, 0}, //0x27
+	{0x338D, 0x3D, 0, 0},
+	{0x338E, 0x01, 0, 0},
+	{0x300F, 0x00, 0, 0},
+	{0x3012, 0x2C, 0, 0},
+	{0x3013, 0x01, 0, 0},	
+	{0x3016, 0x09, 0, 0},
+	
+	{0x301D, 0xC2, 0, 0},
+	{0x3070, 0x02, 0, 0},
+	{0x3071, 0x01, 0, 0},
+	{0x309E, 0x22, 0, 0},
+	{0x30A5, 0xFB, 0, 0},
+	{0x30A6, 0x02, 0, 0},
+	{0x30B3, 0xFF, 0, 0},
+	{0x30B4, 0x01, 0, 0},
+	{0x30B5, 0x42, 0, 0},
+	{0x30B8, 0x10, 0, 0},
+	
+	{0x30C2, 0x01, 0, 0},
+	{0x310F, 0x0F, 0, 0},
+	{0x3110, 0x0E, 0, 0},
+	{0x3111, 0xE7, 0, 0},
+	{0x3112, 0x9C, 0, 0},
+	{0x3113, 0x83, 0, 0},
+	{0x3114, 0x10, 0, 0},
+	{0x3115, 0x42, 0, 0},
+	{0x3128, 0x1E, 0, 0},
+	{0x31ED, 0x38, 0, 0},
+	
+	{0x320C, 0xCF, 0, 0},
+	{0x324C, 0x40, 0, 0},
+	{0x324D, 0x03, 0, 0},
+	{0x3261, 0xE0, 0, 0},
+	{0x3262, 0x02, 0, 0},
+	{0x326E, 0x2F, 0, 0},
+	{0x326F, 0x30, 0, 0},
+	{0x3270, 0x03, 0, 0},
+	{0x3298, 0x00, 0, 0},
+	{0x329A, 0x12, 0, 0},
+	
+	{0x329B, 0xF1, 0, 0},
+	{0x329C, 0x0C, 0, 0},
+	{0x0000, 0x00, 0, 0},
+};
+
+static struct imx224_mode_info imx224_mode_info_data[imx224_mode_MAX + 1] = {
+
+	{
+		imx224_mode_VGA_1312_978, 1312, 978,
+		imx224_settings,
+		ARRAY_SIZE(imx224_settings)
+	}
+};
+
+static struct regulator *io_regulator;
+static struct regulator *core_regulator;
+static struct regulator *analog_regulator;
+static struct regulator *gpo_regulator;
+
+static int imx224_probe(struct i2c_client *adapter,
+				const struct i2c_device_id *device_id);
+static int imx224_remove(struct i2c_client *client);
+
+static s32 imx224_read_reg(u16 reg, u8 *val);
+static s32 imx224_write_reg(u16 reg, u8 val);
+
+static const struct i2c_device_id imx224_id[] = {
+	{"imx224_mipi", 0},
+	{},
+};
+
+MODULE_DEVICE_TABLE(i2c, imx224_id);
+
+static struct i2c_driver imx224_i2c_driver = {
+	.driver = {
+		  .owner = THIS_MODULE,
+		  .name  = "imx224_mipi",
+		  },
+	.probe  = imx224_probe,
+	.remove = imx224_remove,
+	.id_table = imx224_id,
+};
+
+static void imx224_standby(s32 enable)
+{
+	pr_info("%s: called %d\n",__func__, enable);
+		
+	imx224_write_reg(0x3002, 0x00);
+	imx224_write_reg(0x3000, 0x01);
+}
+
+static void imx224_reset(void)
+{
+	int i;
+	
+	pr_info("%s: called\n",__func__); 
+	
+	mxc_camera_common_lock();
+
+	/* camera reset */
+	gpio_set_value(rst_gpio, 1);
+
+	gpio_set_value(cam_sel2_gpio, 0);
+	msleep(5);
+
+	gpio_set_value(cam_sel1_gpio, 0);
+	msleep(5);
+
+	gpio_set_value(rst_gpio, 0);
+	msleep(1);
+
+	gpio_set_value(rst_gpio, 1);
+	msleep(20);
+	pr_debug("%s(mipi): reset released\n", __func__);
+
+	mxc_camera_common_unlock();
+}
+
+static int imx224_power_on(struct device *dev)
+{
+	int ret = 0;
+
+	pr_info("%s: called\n",__func__);
+	
+// 2016.01.11 JV
+// Commented code below is an example from the IMX224.
+// Fillet config uses the always on 5V from the sabrelite board.
+// The regulators are on the camera mux board that provides the
+// correct voltage levels for the imx224
+/*
+	io_regulator = devm_regulator_get(dev, "DOVDD");
+	if (!IS_ERR(io_regulator)) {
+		regulator_set_voltage(io_regulator,
+				      IMX224_VOLTAGE_DIGITAL_IO,
+				      IMX224_VOLTAGE_DIGITAL_IO);
+		ret = regulator_enable(io_regulator);
+		if (ret) {
+			pr_err("%s:io set voltage error\n", __func__);
+			return ret;
+		} else {
+			dev_dbg(dev,
+				"%s:io set voltage ok\n", __func__);
+		}
+	} else {
+		pr_err("%s: cannot get io voltage error\n", __func__);
+		io_regulator = NULL;
+	}
+
+	core_regulator = devm_regulator_get(dev, "DVDD");
+	if (!IS_ERR(core_regulator)) {
+		regulator_set_voltage(core_regulator,
+				      IMX224_VOLTAGE_DIGITAL_CORE,
+				      IMX224_VOLTAGE_DIGITAL_CORE);
+		ret = regulator_enable(core_regulator);
+		if (ret) {
+			pr_err("%s:core set voltage error\n", __func__);
+			return ret;
+		} else {
+			dev_dbg(dev,
+				"%s:core set voltage ok\n", __func__);
+		}
+	} else {
+		core_regulator = NULL;
+		pr_err("%s: cannot get core voltage error\n", __func__);
+	}
+
+	analog_regulator = devm_regulator_get(dev, "AVDD");
+	if (!IS_ERR(analog_regulator)) {
+		regulator_set_voltage(analog_regulator,
+				      IMX224_VOLTAGE_ANALOG,
+				      IMX224_VOLTAGE_ANALOG);
+		ret = regulator_enable(analog_regulator);
+		if (ret) {
+			pr_err("%s:analog set voltage error\n",
+				__func__);
+			return ret;
+		} else {
+			dev_dbg(dev,
+				"%s:analog set voltage ok\n", __func__);
+		}
+	} else {
+		analog_regulator = NULL;
+		pr_err("%s: cannot get analog voltage error\n", __func__);
+	}
+*/
+	return ret;
+}
+
+static s32 imx224_read_reg(u16 reg, u8 *val)
+{
+	struct sensor_data *sensor = &imx224_data;
+	struct i2c_client *client = sensor->i2c_client;
+	struct i2c_msg msgs[2];
+	u8 buf[2];
+	int ret;
+
+	buf[0] = reg >> 8;
+	buf[1] = reg & 0xff;
+	msgs[0].addr = client->addr;
+	msgs[0].flags = 0;
+	msgs[0].len = 2;
+	msgs[0].buf = buf;
+
+	msgs[1].addr = client->addr;
+	msgs[1].flags = I2C_M_RD;
+	msgs[1].len = 1;
+	msgs[1].buf = buf;
+
+	ret = i2c_transfer(client->adapter, msgs, 2);
+	if (ret < 0) {
+		pr_info("%s(mipi):addr=%x reg=%x ret=%d\n", __func__, client->addr, reg, ret);
+		return ret;
+	}
+	*val = buf[0];
+	pr_info("%s(mipi):addr=%x reg=%x,val=%x\n", __func__, client->addr, reg, buf[0]);
+	return buf[0];
+}
+
+static s32 imx224_write_reg(u16 reg, u8 val)
+{
+	int ret;
+	u8 au8Buf[3] = {0};
+
+	au8Buf[0] = reg >> 8;
+	au8Buf[1] = reg & 0xff;
+	au8Buf[2] = val;
+
+#if 0	/* Software reset does not affect the i2c address register like it does on ov5642 */
+	if ((reg == 0x3008) && (val & 0x80)) {
+		mxc_camera_common_lock();
+
+		ret = i2c_master_send(imx224_data.i2c_client, au8Buf, 3);
+		pr_debug("%s(mipi): software reset %d\n", __func__, ret);
+		update_device_addr(&imx224_data);
+
+		mxc_camera_common_unlock();
+	} else
+#endif
+	{
+		ret = i2c_master_send(imx224_data.i2c_client, au8Buf, 3);
+	}
+
+	if (ret < 0) {
+		pr_debug("%s(mipi):reg=%04x,val=%02x error=%d\n",
+			__func__, reg, val, ret);
+		return ret;
+	}
+	//pr_info("%s(mipi):reg=%04x,val=%02x\n", __func__, reg, val);
+	return 0;
+}
+
+static int ioctl_send_command(struct v4l2_int_device *s, struct v4l2_send_command_control *vc) {
+	int ret = -1;
+	int retval1;
+	u8 regval;
+	u8 loca_val=0;
+	
+	void *mipi_csi2_info;
+	u32 mipi_reg, msec_wait4stable = 0;
+	
+	mipi_csi2_info = mipi_csi2_get_info();
+	
+	//pr_info("%s: called\n",__func__);
+	
+	switch (vc->id) {
+		case 69:
+			
+			imx224_write_reg(0x3002, 0x00);
+	        imx224_write_reg(0x3000, 0x01);
+			
+			gpio_set_value(cam_sel2_gpio, vc->value1);
+			gpio_set_value(cam_sel1_gpio, vc->value0);
+			
+			msleep(5);
+			
+			imx224_write_reg(0x3002, 0x00);
+	        imx224_write_reg(0x3000, 0x00);
+	        
+	        msleep(20);
+	        msleep(75);
+	        
+	        if (mipi_csi2_info) {
+				unsigned int i = 0;
+
+				/* wait for mipi sensor ready */
+				while (1) {
+					mipi_reg = mipi_csi2_dphy_status(mipi_csi2_info);					
+					if ((mipi_reg & 0x700) == 0x300)
+						break;
+					pr_info("mipi_csi2_dphy_status %x\n", mipi_reg);
+					if (i++ >= 20) {
+						pr_info("mipi csi2 can not receive sensor clk! %x\n", mipi_reg);
+						return -1;
+					}
+					msleep(5);
+				}
+
+				i = 0;
+				/* wait for mipi stable */
+				while (1) {
+					mipi_reg = mipi_csi2_get_error1(mipi_csi2_info);	
+					if (!mipi_reg)
+						break;
+					pr_info("mipi_csi2_get_error1 %x\n", mipi_reg);
+					if (i++ >= 20) {
+						pr_info("mipi csi2 can not receive data correctly!\n");
+						return -1;
+					}
+					msleep(5);
+				}
+			}
+	        		
+			break;
+		default:
+			pr_err("%s:Unknown ctrl 0x%x\n", __func__, vc->id);
+			break;
+	}
+	return ret;
+}
+
+static int imx224_init_mode(enum imx224_frame_rate frame_rate,
+			    enum imx224_mode mode, enum imx224_mode orig_mode)
+{
+	struct reg_value *pModeSetting = NULL;
+	s32 ArySize = 0;
+	int retval = 0;
+	int i;
+	void *mipi_csi2_info;
+	u32 mipi_reg, msec_wait4stable = 0;
+	
+	pr_info("%s: called\n",__func__);
+	
+	pr_info("%s: mode=%d  orig_mode=%d\n", __func__, mode, orig_mode);
+
+	pr_info("%s: framerate = %d\n", __func__,  imx224_framerates[frame_rate] );
+
+	if ((mode > imx224_mode_MAX || mode < imx224_mode_MIN)
+		&& (mode != imx224_mode_INIT)) {
+		pr_err("Wrong imx224 mode detected!\n");
+		return -1;
+	}
+
+	mipi_csi2_info = mipi_csi2_get_info();
+
+	/* initial mipi dphy */
+	if (!mipi_csi2_info) {
+		printk(KERN_ERR "%s() in %s: Fail to get mipi_csi2_info!\n",
+		       __func__, __FILE__);
+		return -1;
+	}
+
+	if (!mipi_csi2_get_status(mipi_csi2_info)) {
+		mipi_csi2_enable(mipi_csi2_info);
+		pr_info("%s: mipi_csi2_enable called\n",__func__);
+	}
+	if (!mipi_csi2_get_status(mipi_csi2_info)) {
+		pr_err("Can not enable mipi csi2 driver!\n");
+		return -1;
+	}
+
+	mipi_csi2_set_lanes(mipi_csi2_info, 2);
+
+	/*Only reset MIPI CSI2 HW at sensor initialize*/
+	if (mode == imx224_mode_INIT)
+		mipi_csi2_reset(mipi_csi2_info);
+
+	if (imx224_data.pix.pixelformat == V4L2_PIX_FMT_UYVY)
+		mipi_csi2_set_datatype(mipi_csi2_info, MIPI_DT_YUV422);
+	else if (imx224_data.pix.pixelformat == V4L2_PIX_FMT_RGB565)
+		mipi_csi2_set_datatype(mipi_csi2_info, MIPI_DT_RGB565);
+	else if (imx224_data.pix.pixelformat == V4L2_PIX_FMT_SRGGB8) {
+	    mipi_csi2_set_datatype(mipi_csi2_info,MIPI_DT_RAW8);
+	    pr_info("%s: set pixelformat V4L2_PIX_FMT_SRGGB8\n",__func__);
+	}
+	else if (imx224_data.pix.pixelformat == V4L2_PIX_FMT_SRGGB10) {
+	    mipi_csi2_set_datatype(mipi_csi2_info,MIPI_DT_RAW10);
+	    pr_info("%s: set pixelformat V4L2_PIX_FMT_SRGGB10\n",__func__);
+	}
+	else
+		pr_err("currently this sensor format can not be supported!\n");
+
+	if (mode == imx224_mode_INIT) {
+		//pModeSetting = imx224_init_setting_30fps_VGA;
+		//ArySize = ARRAY_SIZE(imx224_init_setting_30fps_VGA);
+
+		imx224_data.pix.width = 1312;
+		imx224_data.pix.height = 978;
+		//retval = imx224_download_firmware(pModeSetting, ArySize);
+		//if (retval < 0)
+		//	goto err;
+
+        //        retval = imx224_download_autofocus();
+		//if (retval < 0) {
+		//	pr_err("%s: error downloading autofocus firmware\n",
+		//	       __func__);
+		//	goto err;
+		//}
+
+		//trigger_auto_focus();
+
+		//pModeSetting = imx224_setting_30fps_VGA_640_480;
+		//ArySize = ARRAY_SIZE(imx224_setting_30fps_VGA_640_480);
+		//retval = imx224_download_firmware(pModeSetting, ArySize);
+		
+		pr_info("%s: Configuring Camera 0\n",__func__);
+		for( i=0; i<1020; i++ )
+		{	
+			if( imx224_settings[i].u16RegAddr == 0x0000 ) {
+				break;
+			}
+			imx224_write_reg( imx224_settings[i].u16RegAddr , imx224_settings[i].u8Val );
+		}
+		
+		gpio_set_value(cam_sel2_gpio, 0);
+		gpio_set_value(cam_sel1_gpio, 1);
+		msleep(100);
+		
+		pr_info("%s: Configuring Camera 1\n",__func__);
+		for( i=0; i<1020; i++ )
+		{	
+			if( imx224_settings[i].u16RegAddr == 0x0000 ) {
+				break;
+			}
+			imx224_write_reg( imx224_settings[i].u16RegAddr , imx224_settings[i].u8Val );
+		}
+		
+		gpio_set_value(cam_sel2_gpio, 1);
+		gpio_set_value(cam_sel1_gpio, 1);
+		msleep(100);
+
+		pr_info("%s: Configuring Camera 2\n",__func__);
+		for( i=0; i<1020; i++ )
+		{	
+			if( imx224_settings[i].u16RegAddr == 0x0000 ) {
+				break;
+			}
+			imx224_write_reg( imx224_settings[i].u16RegAddr , imx224_settings[i].u8Val );
+		}
+		
+		gpio_set_value(cam_sel2_gpio, 0);
+		gpio_set_value(cam_sel1_gpio, 0);
+		msleep(100);
+		
+		imx224_write_reg(0x3002, 0x00);
+		imx224_write_reg(0x3000, 0x00);
+		
+	}
+
+	if (retval < 0)
+		goto err;
+
+	//IMX224_set_AE_target(AE_Target);
+	//IMX224_get_light_freq();
+	//IMX224_set_bandingfilter();
+	//imx224_set_virtual_channel(imx224_data.virtual_channel);
+
+
+	
+	//gpio_set_value(cam_sel2_gpio, 0);
+	//gpio_set_value(cam_sel1_gpio, 1);
+	//msleep(500);
+
+	//imx224_write_reg(0x3002, 0x00);
+	//imx224_write_reg(0x3000, 0x00);
+
+	//gpio_set_value(cam_sel2_gpio, 1);
+	//gpio_set_value(cam_sel1_gpio, 1);
+	//msleep(500);
+
+	//imx224_write_reg(0x3002, 0x00);
+	//imx224_write_reg(0x3000, 0x00);
+	
+	//gpio_set_value(cam_sel2_gpio, 0);
+	//gpio_set_value(cam_sel1_gpio, 0);
+	//msleep(500);
+
+	/* add delay to wait for sensor stable */
+	if (frame_rate == imx224_15_fps) {
+		/* dump the first nine frames: 1/15*9 */
+		msec_wait4stable = 600;
+	} else if (frame_rate == imx224_30_fps) {
+		/* dump the first nine frames: 1/30*9 */
+		msec_wait4stable = 300;
+	} else if (frame_rate == imx224_60_fps) {
+		/* dump the first nine frames: 1/60*9 */
+		msec_wait4stable = 150;
+	} else {
+		/* dump the first nine frames: 1/120*9 */
+		msec_wait4stable = 75;
+	}
+	msleep(msec_wait4stable);
+
+	if (mipi_csi2_info) {
+		unsigned int i = 0;
+
+		/* wait for mipi sensor ready */
+		while (1) {
+			mipi_reg = mipi_csi2_dphy_status(mipi_csi2_info);
+			pr_info("mipi_csi2_dphy_status %x\n", mipi_reg);
+			if ((mipi_reg & 0x700) == 0x300)
+				break;
+			if (i++ >= 20) {
+				pr_info("mipi csi2 can not receive sensor clk! %x\n", mipi_reg);
+				return -1;
+			}
+			msleep(10);
+		}
+
+		i = 0;
+		/* wait for mipi stable */
+		while (1) {
+			mipi_reg = mipi_csi2_get_error2(mipi_csi2_info);
+			pr_info("mipi_csi2_get_error2 %x\n", mipi_reg);
+			mipi_reg = mipi_csi2_get_error1(mipi_csi2_info);	
+			pr_info("mipi_csi2_get_error1 %x\n", mipi_reg);
+			if (!mipi_reg)
+				break;
+			if (i++ >= 20) {
+				pr_info("mipi csi2 can not receive data correctly!\n");
+				return -1;
+			}
+			msleep(10);
+		}
+
+	}
+err:
+	return retval;
+}
+
+/* --------------- IOCTL functions from v4l2_int_ioctl_desc --------------- */
+
+static int ioctl_g_ifparm(struct v4l2_int_device *s, struct v4l2_ifparm *p)
+{
+	
+	pr_info("%s: called\n",__func__);
+	
+	
+	if (s == NULL) {
+		pr_err("   ERROR!! no slave device set!\n");
+		return -1;
+	}
+
+	memset(p, 0, sizeof(*p));
+	p->u.bt656.clock_curr = imx224_data.mclk;
+	pr_debug("   clock_curr=mclk=%d\n", imx224_data.mclk);
+	p->if_type = V4L2_IF_TYPE_BT656;
+	p->u.bt656.mode = V4L2_IF_TYPE_BT656_MODE_NOBT_8BIT;
+	p->u.bt656.clock_min = IMX224_XCLK_MIN;
+	p->u.bt656.clock_max = IMX224_XCLK_MAX;
+	p->u.bt656.bt_sync_correct = 0;  /* Indicate external vsync */
+	//p->u.bt656.nobt_vs_inv = 0;
+	//p->u.bt656.nobt_hs_inv = 0;
+	//p->u.bt656.latch_clk_inv = 0;
+	return 0;
+}
+
+/*!
+ * ioctl_s_power - V4L2 sensor interface handler for VIDIOC_S_POWER ioctl
+ * @s: pointer to standard V4L2 device structure
+ * @on: indicates power mode (on or off)
+ *
+ * Turns the power on or off, depending on the value of on and returns the
+ * appropriate error code.
+ */
+static int ioctl_s_power(struct v4l2_int_device *s, int on)
+{
+	struct sensor_data *sensor = s->priv;
+	
+	pr_info("%s: called\n",__func__);
+
+	if (on && !sensor->on) {
+		if (io_regulator)
+			if (regulator_enable(io_regulator) != 0)
+				return -EIO;
+		if (core_regulator)
+			if (regulator_enable(core_regulator) != 0)
+				return -EIO;
+		if (gpo_regulator)
+			if (regulator_enable(gpo_regulator) != 0)
+				return -EIO;
+		if (analog_regulator)
+			if (regulator_enable(analog_regulator) != 0)
+				return -EIO;
+		/* Make sure power on */
+		//imx224_standby(0);
+	} else if (!on && sensor->on) {
+		if (analog_regulator)
+			regulator_disable(analog_regulator);
+		if (core_regulator)
+			regulator_disable(core_regulator);
+		if (io_regulator)
+			regulator_disable(io_regulator);
+		if (gpo_regulator)
+			regulator_disable(gpo_regulator);
+
+		imx224_standby(1);
+	}
+
+	sensor->on = on;
+
+	return 0;
+}
+
+/*!
+ * ioctl_g_parm - V4L2 sensor interface handler for VIDIOC_G_PARM ioctl
+ * @s: pointer to standard V4L2 device structure
+ * @a: pointer to standard V4L2 VIDIOC_G_PARM ioctl structure
+ *
+ * Returns the sensor's video CAPTURE parameters.
+ */
+static int ioctl_g_parm(struct v4l2_int_device *s, struct v4l2_streamparm *a)
+{
+	struct sensor_data *sensor = s->priv;
+	struct v4l2_captureparm *cparm = &a->parm.capture;
+	int ret = 0;
+	
+	pr_info("%s: called %d\n",__func__, a->type);
+
+	switch (a->type) {
+	/* This is the only case currently handled. */
+	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
+		memset(a, 0, sizeof(*a));
+		a->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+		cparm->capability = sensor->streamcap.capability;
+		cparm->timeperframe = sensor->streamcap.timeperframe;
+		cparm->capturemode = sensor->streamcap.capturemode;
+		ret = 0;
+		break;
+
+	/* These are all the possible cases. */
+	case V4L2_BUF_TYPE_VIDEO_OUTPUT:
+	case V4L2_BUF_TYPE_VIDEO_OVERLAY:
+	case V4L2_BUF_TYPE_VBI_CAPTURE:
+	case V4L2_BUF_TYPE_VBI_OUTPUT:
+	case V4L2_BUF_TYPE_SLICED_VBI_CAPTURE:
+	case V4L2_BUF_TYPE_SLICED_VBI_OUTPUT:
+		ret = -EINVAL;
+		break;
+
+	default:
+		pr_debug("   type is unknown - %d\n", a->type);
+		ret = -EINVAL;
+		break;
+	}
+
+	return ret;
+}
+
+/*!
+ * ioctl_s_parm - V4L2 sensor interface handler for VIDIOC_S_PARM ioctl
+ * @s: pointer to standard V4L2 device structure
+ * @a: pointer to standard V4L2 VIDIOC_S_PARM ioctl structure
+ *
+ * Configures the sensor to use the input parameters, if possible.  If
+ * not possible, reverts to the old parameters and returns the
+ * appropriate error code.
+ */
+static int ioctl_s_parm(struct v4l2_int_device *s, struct v4l2_streamparm *a)
+{
+	struct sensor_data *sensor = s->priv;
+	struct v4l2_fract *timeperframe = &a->parm.capture.timeperframe;
+	u32 tgt_fps;	/* target frames per secound */
+	enum imx224_frame_rate frame_rate;
+	enum imx224_mode orig_mode;
+	int ret = 0;
+	
+	pr_info("%s: called\n",__func__);
+
+	/* Make sure power on */
+	//imx224_standby(0);
+
+	switch (a->type) {
+	/* This is the only case currently handled. */
+	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
+		/* Check that the new frame rate is allowed. */
+		if ((timeperframe->numerator == 0) ||
+		    (timeperframe->denominator == 0)) {
+			timeperframe->denominator = DEFAULT_FPS;
+			timeperframe->numerator = 1;
+		}
+
+		tgt_fps = timeperframe->denominator /
+			  timeperframe->numerator;
+
+		if (tgt_fps > MAX_FPS) {
+			timeperframe->denominator = MAX_FPS;
+			timeperframe->numerator = 1;
+		} else if (tgt_fps < MIN_FPS) {
+			timeperframe->denominator = MIN_FPS;
+			timeperframe->numerator = 1;
+		}
+
+		/* Actual frame rate we use */
+		tgt_fps = timeperframe->denominator /
+			  timeperframe->numerator;
+
+		if (tgt_fps == 15)
+			frame_rate = imx224_15_fps;
+		else if (tgt_fps == 30)
+			frame_rate = imx224_30_fps;
+		else if (tgt_fps == 60)
+			frame_rate = imx224_60_fps;
+		else if (tgt_fps == 120)
+			frame_rate = imx224_120_fps;
+		else {
+			pr_err(" The camera frame rate is not supported!\n");
+			return -EINVAL;
+		}
+
+		orig_mode = sensor->streamcap.capturemode;
+		ret = imx224_init_mode(frame_rate,
+				(u32)a->parm.capture.capturemode, orig_mode);
+		if (ret < 0)
+			return ret;
+
+		sensor->streamcap.timeperframe = *timeperframe;
+		sensor->streamcap.capturemode =
+				(u32)a->parm.capture.capturemode;
+		break;
+
+	/* These are all the possible cases. */
+	case V4L2_BUF_TYPE_VIDEO_OUTPUT:
+	case V4L2_BUF_TYPE_VIDEO_OVERLAY:
+	case V4L2_BUF_TYPE_VBI_CAPTURE:
+	case V4L2_BUF_TYPE_VBI_OUTPUT:
+	case V4L2_BUF_TYPE_SLICED_VBI_CAPTURE:
+	case V4L2_BUF_TYPE_SLICED_VBI_OUTPUT:
+		pr_debug("   type is not " \
+			"V4L2_BUF_TYPE_VIDEO_CAPTURE but %d\n",
+			a->type);
+		ret = -EINVAL;
+		break;
+
+	default:
+		pr_debug("   type is unknown - %d\n", a->type);
+		ret = -EINVAL;
+		break;
+	}
+
+	return ret;
+}
+
+/*!
+ * ioctl_g_fmt_cap - V4L2 sensor interface handler for ioctl_g_fmt_cap
+ * @s: pointer to standard V4L2 device structure
+ * @f: pointer to standard V4L2 v4l2_format structure
+ *
+ * Returns the sensor's current pixel format in the v4l2_format
+ * parameter.
+ */
+static int ioctl_g_fmt_cap(struct v4l2_int_device *s, struct v4l2_format *f)
+{
+	struct sensor_data *sensor = s->priv;
+	
+	pr_info("%s: called\n",__func__);
+
+	switch (f->type) {
+	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
+		f->fmt.pix = sensor->pix;
+		pr_info("%s: %dx%d\n", __func__, sensor->pix.width, sensor->pix.height);
+		break;
+
+	case V4L2_BUF_TYPE_SENSOR:
+		pr_info("%s: left=%d, top=%d, %dx%d\n", __func__,
+			sensor->spix.left, sensor->spix.top,
+			sensor->spix.swidth, sensor->spix.sheight);
+		f->fmt.spix = sensor->spix;
+		break;
+
+	case V4L2_BUF_TYPE_PRIVATE:
+		break;
+
+	default:
+		f->fmt.pix = sensor->pix;
+		break;
+	}
+
+	return 0;
+}
+
+/*!
+ * ioctl_g_ctrl - V4L2 sensor interface handler for VIDIOC_G_CTRL ioctl
+ * @s: pointer to standard V4L2 device structure
+ * @vc: standard V4L2 VIDIOC_G_CTRL ioctl structure
+ *
+ * If the requested control is supported, returns the control's current
+ * value from the video_control[] array.  Otherwise, returns -EINVAL
+ * if the control is not supported.
+ */
+static int ioctl_g_ctrl(struct v4l2_int_device *s, struct v4l2_control *vc)
+{
+	int ret = 0;
+	
+	pr_info("%s: called\n",__func__);
+
+	switch (vc->id) {
+	case V4L2_CID_BRIGHTNESS:
+		vc->value = imx224_data.brightness;
+		break;
+	case V4L2_CID_HUE:
+		vc->value = imx224_data.hue;
+		break;
+	case V4L2_CID_CONTRAST:
+		vc->value = imx224_data.contrast;
+		break;
+	case V4L2_CID_SATURATION:
+		vc->value = imx224_data.saturation;
+		break;
+	case V4L2_CID_RED_BALANCE:
+		vc->value = imx224_data.red;
+		break;
+	case V4L2_CID_BLUE_BALANCE:
+		vc->value = imx224_data.blue;
+		break;
+	case V4L2_CID_EXPOSURE:
+		vc->value = imx224_data.ae_mode;
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+
+/*!
+ * ioctl_s_ctrl - V4L2 sensor interface handler for VIDIOC_S_CTRL ioctl
+ * @s: pointer to standard V4L2 device structure
+ * @vc: standard V4L2 VIDIOC_S_CTRL ioctl structure
+ *
+ * If the requested control is supported, sets the control's current
+ * value in HW (and updates the video_control[] array).  Otherwise,
+ * returns -EINVAL if the control is not supported.
+ */
+static int ioctl_s_ctrl(struct v4l2_int_device *s, struct v4l2_control *vc)
+{
+	int retval = 0;
+	
+	pr_info("%s: called\n",__func__);
+
+	pr_debug("In imx224:ioctl_s_ctrl %d\n",
+		 vc->id);
+
+	switch (vc->id) {
+	case V4L2_CID_BRIGHTNESS:
+		break;
+	case V4L2_CID_AUTO_FOCUS_START:
+		break;
+	case V4L2_CID_CONTRAST:
+		break;
+	case V4L2_CID_SATURATION:
+		break;
+	case V4L2_CID_HUE:
+		break;
+	case V4L2_CID_AUTO_WHITE_BALANCE:
+		break;
+	case V4L2_CID_DO_WHITE_BALANCE:
+		break;
+	case V4L2_CID_RED_BALANCE:
+		break;
+	case V4L2_CID_BLUE_BALANCE:
+		break;
+	case V4L2_CID_GAMMA:
+		break;
+	case V4L2_CID_EXPOSURE:
+		break;
+	case V4L2_CID_AUTOGAIN:
+		break;
+	case V4L2_CID_GAIN:
+		break;
+	case V4L2_CID_HFLIP:
+		break;
+	case V4L2_CID_VFLIP:
+		break;
+	default:
+		retval = -EPERM;
+		break;
+	}
+
+	return retval;
+}
+
+/*!
+ * ioctl_enum_framesizes - V4L2 sensor interface handler for
+ *			   VIDIOC_ENUM_FRAMESIZES ioctl
+ * @s: pointer to standard V4L2 device structure
+ * @fsize: standard V4L2 VIDIOC_ENUM_FRAMESIZES ioctl structure
+ *
+ * Return 0 if successful, otherwise -EINVAL.
+ */
+static int ioctl_enum_framesizes(struct v4l2_int_device *s,
+				 struct v4l2_frmsizeenum *fsize)
+{
+	pr_info("%s: called\n",__func__);
+	
+	if (fsize->index > imx224_mode_MAX)
+		return -EINVAL;
+
+	fsize->pixel_format = imx224_data.pix.pixelformat;
+	fsize->discrete.width = imx224_mode_info_data[fsize->index].width;
+	fsize->discrete.height = imx224_mode_info_data[fsize->index].height;
+	return 0;
+}
+
+/*!
+ * ioctl_enum_frameintervals - V4L2 sensor interface handler for
+ *			       VIDIOC_ENUM_FRAMEINTERVALS ioctl
+ * @s: pointer to standard V4L2 device structure
+ * @fival: standard V4L2 VIDIOC_ENUM_FRAMEINTERVALS ioctl structure
+ *
+ * Return 0 if successful, otherwise -EINVAL.
+ */
+static int ioctl_enum_frameintervals(struct v4l2_int_device *s,
+					 struct v4l2_frmivalenum *fival)
+{
+	int i, j, count = 0;
+
+	pr_info("%s: called\n",__func__);
+	
+	return -EINVAL;
+}
+
+/*!
+ * ioctl_g_chip_ident - V4L2 sensor interface handler for
+ *			VIDIOC_DBG_G_CHIP_IDENT ioctl
+ * @s: pointer to standard V4L2 device structure
+ * @id: pointer to int
+ *
+ * Return 0.
+ */
+static int ioctl_g_chip_ident(struct v4l2_int_device *s, int *id)
+{
+	pr_info("%s: called\n",__func__);
+	
+	((struct v4l2_dbg_chip_ident *)id)->match.type =
+					V4L2_CHIP_MATCH_I2C_DRIVER;
+	strcpy(((struct v4l2_dbg_chip_ident *)id)->match.name,
+		"imx224_mipi_camera");
+
+	return 0;
+}
+
+/*!
+ * ioctl_init - V4L2 sensor interface handler for VIDIOC_INT_INIT
+ * @s: pointer to standard V4L2 device structure
+ */
+static int ioctl_init(struct v4l2_int_device *s)
+{
+    pr_info("%s: called\n",__func__);
+	return 0;
+}
+
+/*!
+ * ioctl_enum_fmt_cap - V4L2 sensor interface handler for VIDIOC_ENUM_FMT
+ * @s: pointer to standard V4L2 device structure
+ * @fmt: pointer to standard V4L2 fmt description structure
+ *
+ * Return 0.
+ */
+static int ioctl_enum_fmt_cap(struct v4l2_int_device *s,
+			      struct v4l2_fmtdesc *fmt)
+{
+	pr_info("%s: called\n",__func__);
+	if (fmt->index > imx224_mode_MAX)
+		return -EINVAL;
+
+	fmt->pixelformat = imx224_data.pix.pixelformat;
+
+	return 0;
+}
+
+/*!
+ * ioctl_dev_init - V4L2 sensor interface handler for vidioc_int_dev_init_num
+ * @s: pointer to standard V4L2 device structure
+ *
+ * Initialise the device when slave attaches to the master.
+ */
+static int ioctl_dev_init(struct v4l2_int_device *s)
+{
+	struct sensor_data *sensor = s->priv;
+	u32 tgt_xclk;	/* target xclk */
+	u32 tgt_fps;	/* target frames per secound */
+	int ret;
+	enum imx224_frame_rate frame_rate;
+	void *mipi_csi2_info;
+
+	pr_info("%s: called\n",__func__);
+	
+	imx224_data.on = true;
+
+	/* mclk */
+	tgt_xclk = imx224_data.mclk;
+	tgt_xclk = min(tgt_xclk, (u32)IMX224_XCLK_MAX);
+	tgt_xclk = max(tgt_xclk, (u32)IMX224_XCLK_MIN);
+	imx224_data.mclk = tgt_xclk;
+
+	pr_debug("   Setting mclk to %d MHz\n", tgt_xclk / 1000000);
+
+	/* Default camera frame rate is set in probe */
+	tgt_fps = sensor->streamcap.timeperframe.denominator /
+		  sensor->streamcap.timeperframe.numerator;
+
+	if (tgt_fps == 15)
+		frame_rate = imx224_15_fps;
+	else if (tgt_fps == 30)
+		frame_rate = imx224_30_fps;
+	else if (tgt_fps == 60)
+		frame_rate = imx224_60_fps;
+	else if (tgt_fps == 120)
+		frame_rate = imx224_120_fps;
+	else
+		return -EINVAL; /* Only support 15fps or 30fps now. */
+
+	mipi_csi2_info = mipi_csi2_get_info();
+
+	/* enable mipi csi2 */
+	if (mipi_csi2_info) {
+		mipi_csi2_enable(mipi_csi2_info);
+		pr_info("%s: mipi_csi2_enable called\n",__func__);
+	} else {
+		printk(KERN_ERR "%s() in %s: Fail to get mipi_csi2_info!\n",
+		       __func__, __FILE__);
+		return -EPERM;
+	}
+
+	ret = imx224_init_mode(frame_rate, imx224_mode_INIT, imx224_mode_INIT);
+
+	return ret;
+}
+
+/*!
+ * ioctl_dev_exit - V4L2 sensor interface handler for vidioc_int_dev_exit_num
+ * @s: pointer to standard V4L2 device structure
+ *
+ * Delinitialise the device when slave detaches to the master.
+ */
+static int ioctl_dev_exit(struct v4l2_int_device *s)
+{
+	void *mipi_csi2_info;
+
+	pr_info("%s: called\n",__func__);
+	
+	mipi_csi2_info = mipi_csi2_get_info();
+
+	/* disable mipi csi2 */
+	if (mipi_csi2_info)
+		if (mipi_csi2_get_status(mipi_csi2_info))
+			mipi_csi2_disable(mipi_csi2_info);
+
+	return 0;
+}
+
+/*!
+ * This structure defines all the ioctls for this module and links them to the
+ * enumeration.
+ */
+static struct v4l2_int_ioctl_desc imx224_ioctl_desc[] = {
+	{vidioc_int_dev_init_num, (v4l2_int_ioctl_func *) ioctl_dev_init},
+	{vidioc_int_dev_exit_num, ioctl_dev_exit},
+	{vidioc_int_s_power_num, (v4l2_int_ioctl_func *) ioctl_s_power},
+	{vidioc_int_g_ifparm_num, (v4l2_int_ioctl_func *) ioctl_g_ifparm},
+/*	{vidioc_int_g_needs_reset_num,
+				(v4l2_int_ioctl_func *)ioctl_g_needs_reset}, */
+/*	{vidioc_int_reset_num, (v4l2_int_ioctl_func *)ioctl_reset}, */
+	{vidioc_int_init_num, (v4l2_int_ioctl_func *) ioctl_init},
+	{vidioc_int_enum_fmt_cap_num,
+				(v4l2_int_ioctl_func *) ioctl_enum_fmt_cap},
+/*	{vidioc_int_try_fmt_cap_num,
+				(v4l2_int_ioctl_func *)ioctl_try_fmt_cap}, */
+	{vidioc_int_g_fmt_cap_num, (v4l2_int_ioctl_func *) ioctl_g_fmt_cap},
+/*	{vidioc_int_s_fmt_cap_num, (v4l2_int_ioctl_func *) ioctl_s_fmt_cap}, */
+	{vidioc_int_g_parm_num, (v4l2_int_ioctl_func *) ioctl_g_parm},
+	{vidioc_int_s_parm_num, (v4l2_int_ioctl_func *) ioctl_s_parm},
+/*	{vidioc_int_queryctrl_num, (v4l2_int_ioctl_func *)ioctl_queryctrl}, */
+	{vidioc_int_g_ctrl_num, (v4l2_int_ioctl_func *) ioctl_g_ctrl},
+	{vidioc_int_s_ctrl_num, (v4l2_int_ioctl_func *) ioctl_s_ctrl},
+	{vidioc_int_enum_framesizes_num,
+				(v4l2_int_ioctl_func *) ioctl_enum_framesizes},
+	{vidioc_int_enum_frameintervals_num,
+			(v4l2_int_ioctl_func *) ioctl_enum_frameintervals},
+	{vidioc_int_g_chip_ident_num,
+				(v4l2_int_ioctl_func *) ioctl_g_chip_ident},
+	{vidioc_int_send_command_num,
+				(v4l2_int_ioctl_func *) ioctl_send_command},
+};
+
+static struct v4l2_int_slave imx224_slave = {
+	.ioctls = imx224_ioctl_desc,
+	.num_ioctls = ARRAY_SIZE(imx224_ioctl_desc),
+};
+
+static struct v4l2_int_device imx224_int_device = {
+	.module = THIS_MODULE,
+	.name = "imx224_mipi",
+	.type = v4l2_int_type_slave,
+	.u = {
+		.slave = &imx224_slave,
+	},
+};
+
+static ssize_t show_reg(struct device *dev,
+			struct device_attribute *attr, char *buf)
+{
+	u8 val;
+	s32 rval = imx224_read_reg(imx224_data.last_reg, &val);
+
+	return sprintf(buf, "imx224[0x%04x]=0x%02x\n",imx224_data.last_reg, rval);
+}
+static ssize_t set_reg(struct device *dev,
+			struct device_attribute *attr,
+		       const char *buf, size_t count)
+{
+	int regnum, value;
+	int num_parsed = sscanf(buf, "%04x=%02x", &regnum, &value);
+	if (1 <= num_parsed) {
+		if (0xffff < (unsigned)regnum){
+			pr_err("%s:invalid regnum %x\n", __func__, regnum);
+			return 0;
+		}
+		imx224_data.last_reg = regnum;
+	}
+	if (2 == num_parsed) {
+		if (0xff < (unsigned)value) {
+			pr_err("%s:invalid value %x\n", __func__, value);
+			return 0;
+		}
+		imx224_write_reg(imx224_data.last_reg, value);
+	}
+	return count;
+}
+static DEVICE_ATTR(imx224_reg, S_IRUGO|S_IWUGO, show_reg, set_reg);
+
+/*!
+ * imx224 I2C probe function
+ *
+ * @param adapter            struct i2c_adapter *
+ * @return  Error code indicating success or failure
+ */
+static int imx224_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
+{
+	struct pwm_device *pwm;
+	struct device *dev = &client->dev;
+	int retval;
+	u8 chip_id_high, chip_id_low, imx224data;
+	struct sensor_data *sensor = &imx224_data;
+	
+	pr_info("%s: called\n",__func__);
+	dev_info(dev,"MIPI probe\n");
+
+	/* request cam_sel2-gpios pin */
+	cam_sel2_gpio = of_get_named_gpio(dev->of_node, "cam_sel2-gpios", 0);
+	if (!gpio_is_valid(cam_sel2_gpio)) {
+		dev_warn(dev, "no cam_sel2_gpio pin available");
+		return -EINVAL;
+	}
+	retval = devm_gpio_request_one(dev, cam_sel2_gpio, GPIOF_OUT_INIT_LOW,
+					"imx224_mipi_camsel2");
+	if (retval < 0) {
+		dev_warn(dev, "request of cam_sel2_gpio failed");
+		return retval;
+	}
+	
+	/* request cam_sel1-gpios pin */
+	cam_sel1_gpio = of_get_named_gpio(dev->of_node, "cam_sel1-gpios", 0);
+	if (!gpio_is_valid(cam_sel1_gpio)) {
+		dev_warn(dev, "no cam_sel1_gpio pin available");
+		return -EINVAL;
+	}
+	retval = devm_gpio_request_one(dev, cam_sel1_gpio, GPIOF_OUT_INIT_LOW,
+					"imx224_mipi_camsel1");
+	if (retval < 0) {
+		dev_warn(dev, "request of cam_sel1_gpio failed");
+		return retval;
+	}
+
+	/* request reset pin */
+	rst_gpio = of_get_named_gpio(dev->of_node, "rst-gpios", 0);
+	if (!gpio_is_valid(rst_gpio)) {
+		dev_warn(dev, "no sensor reset pin available");
+		return -EINVAL;
+	}
+	retval = devm_gpio_request_one(dev, rst_gpio, GPIOF_OUT_INIT_HIGH,
+					"imx224_mipi_reset");
+	if (retval < 0) {
+		dev_warn(dev, "request of imx224_mipi_reset failed"); 
+		return retval;
+	}
+
+	/* Set initial values for the sensor struct. */
+	memset(&imx224_data, 0, sizeof(imx224_data));
+
+	sensor->mipi_camera = 1;
+	imx224_data.sensor_clk = devm_clk_get(dev, "csi_mclk");
+	if (IS_ERR(imx224_data.sensor_clk)) {
+		/* assuming clock enabled by default */
+		imx224_data.sensor_clk = NULL;
+		dev_err(dev, "clock-frequency missing or invalid\n");
+		return PTR_ERR(imx224_data.sensor_clk);
+	}
+
+	retval = of_property_read_u32(dev->of_node, "mclk",
+					&(imx224_data.mclk));
+	if (retval) {
+		dev_err(dev, "mclk missing or invalid\n");
+		return retval;
+	}
+
+	retval = of_property_read_u32(dev->of_node, "mclk_source",
+					(u32 *) &(imx224_data.mclk_source));
+	if (retval) {
+		dev_err(dev, "mclk_source missing or invalid\n");
+		return retval;
+	}
+
+	retval = of_property_read_u32(dev->of_node, "ipu_id",
+					&sensor->ipu_id);
+	if (retval) {
+		dev_err(dev, "ipu_id missing or invalid\n");
+		return retval;
+	}
+
+	retval = of_property_read_u32(dev->of_node, "csi_id",
+					&(imx224_data.csi));
+	if (retval) {
+		dev_err(dev, "csi id missing or invalid\n");
+		return retval;
+	}
+
+	clk_prepare_enable(imx224_data.sensor_clk);
+
+	imx224_data.io_init = imx224_reset;
+	imx224_data.i2c_client = client;
+	imx224_data.pix.pixelformat = V4L2_PIX_FMT_SRGGB10;
+	imx224_data.pix.width = 1312;
+	imx224_data.pix.height = 978;
+	imx224_data.streamcap.capability = V4L2_MODE_HIGHQUALITY |
+					   V4L2_CAP_TIMEPERFRAME;
+	imx224_data.streamcap.capturemode = 0;
+	imx224_data.streamcap.timeperframe.denominator = DEFAULT_FPS;
+	imx224_data.streamcap.timeperframe.numerator = 1;
+
+//	imx224_power_on(dev);
+
+	imx224_reset();
+
+//	imx224_standby(0);
+
+	retval = imx224_read_reg(0x337E, &imx224data);	
+    if (retval < 0 || imx224data != 0x0C) {
+		pr_warning("camera imx224_mipi is not found\n");
+		clk_disable_unprepare(imx224_data.sensor_clk);
+		return -ENODEV;
+	}
+
+	//retval = imx224_read_reg(IMX224_CHIP_ID_HIGH_BYTE, &chip_id_high);
+	//if (retval < 0 || chip_id_high != 0x56) {
+	//	pr_warning("camera imx224_mipi is not found\n");
+	//	clk_disable_unprepare(imx224_data.sensor_clk);
+	//	return -ENODEV;
+	//}
+	//retval = imx224_read_reg(IMX224_CHIP_ID_LOW_BYTE, &chip_id_low);
+	//if (retval < 0 || chip_id_low != 0x40) {
+	//	pr_warning("camera imx224_mipi is not found\n");
+	//	clk_disable_unprepare(imx224_data.sensor_clk);
+	//	return -ENODEV;
+	//}
+
+	sensor->virtual_channel = 0;//sensor->csi | (sensor->ipu_id << 1);
+	//imx224_standby(1);
+
+	imx224_int_device.priv = &imx224_data;
+	retval = v4l2_int_device_register(&imx224_int_device);
+
+//	clk_disable_unprepare(imx224_data.sensor_clk);
+
+	if (device_create_file(dev, &dev_attr_imx224_reg))
+		dev_err(dev, "%s: error creating imx224_reg entry\n", __func__);
+	pr_info("camera imx224_mipi is found: driver 2016.01.11\n");
+	return retval;
+}
+
+/*!
+ * imx224 I2C detach function
+ *
+ * @param client            struct i2c_client *
+ * @return  Error code indicating success or failure
+ */
+static int imx224_remove(struct i2c_client *client)
+{
+	pr_info("%s: called\n",__func__);
+	
+	v4l2_int_device_unregister(&imx224_int_device);
+
+	if (gpo_regulator)
+		regulator_disable(gpo_regulator);
+
+	if (analog_regulator)
+		regulator_disable(analog_regulator);
+
+	if (core_regulator)
+		regulator_disable(core_regulator);
+
+	if (io_regulator)
+		regulator_disable(io_regulator);
+
+	return 0;
+}
+
+/*!
+ * imx224 init function
+ * Called by insmod imx224_camera.ko.
+ *
+ * @return  Error code indicating success or failure
+ */
+static __init int imx224_init(void)
+{
+	u8 err;
+
+	pr_info("%s: called\n",__func__);
+	
+	err = i2c_add_driver(&imx224_i2c_driver);
+	if (err != 0)
+		pr_err("%s:driver registration failed, error=%d\n",
+			__func__, err);
+
+	return err;
+}
+
+/*!
+ * IMX224 cleanup function
+ * Called on rmmod imx224_camera.ko
+ *
+ * @return  Error code indicating success or failure
+ */
+static void __exit imx224_clean(void)
+{
+	i2c_del_driver(&imx224_i2c_driver);
+}
+
+module_init(imx224_init);
+module_exit(imx224_clean);
+
+MODULE_AUTHOR("Textron Systems");
+MODULE_DESCRIPTION("IMX224 MIPI Camera Driver");
+MODULE_LICENSE("GPL");
+MODULE_VERSION("1.0");
+MODULE_ALIAS("CSI");

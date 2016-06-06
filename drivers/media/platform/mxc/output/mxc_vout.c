@@ -74,6 +74,7 @@ struct mxc_vout_fb {
 	int ipu_id;
 	struct v4l2_rect crop_bounds;
 	unsigned int disp_fmt;
+	unsigned int if_fmt;
 	bool disp_support_csc;
 	bool disp_support_windows;
 };
@@ -92,7 +93,6 @@ struct mxc_vout_output {
 	struct video_device *vfd;
 	struct mutex mutex;
 	struct mutex task_lock;
-	struct mutex accs_lock;
 	enum v4l2_buf_type type;
 
 	struct videobuf_queue vbq;
@@ -234,9 +234,6 @@ static struct mxc_vout_fb g_fb_setting[MAX_FB_NUM];
 static int config_disp_output(struct mxc_vout_output *vout);
 static void release_disp_output(struct mxc_vout_output *vout);
 
-static DEFINE_MUTEX(gfb_mutex);
-static DEFINE_MUTEX(gfbi_mutex);
-
 static unsigned int get_frame_size(struct mxc_vout_output *vout)
 {
 	unsigned int size;
@@ -295,7 +292,7 @@ static ipu_channel_t get_ipu_channel(struct fb_info *fbi)
 	return ipu_ch;
 }
 
-static unsigned int get_ipu_fmt(struct fb_info *fbi)
+static unsigned int get_fb_fmt(struct fb_info *fbi)
 {
 	mm_segment_t old_fs;
 	unsigned int fb_fmt;
@@ -303,12 +300,28 @@ static unsigned int get_ipu_fmt(struct fb_info *fbi)
 	if (fbi->fbops->fb_ioctl) {
 		old_fs = get_fs();
 		set_fs(KERNEL_DS);
-		fbi->fbops->fb_ioctl(fbi, MXCFB_GET_DIFMT,
+		fbi->fbops->fb_ioctl(fbi, MXCFB_GET_FBFMT,
 				(unsigned long)&fb_fmt);
 		set_fs(old_fs);
 	}
 
 	return fb_fmt;
+}
+
+static unsigned int get_ipu_fmt(struct fb_info *fbi)
+{
+	mm_segment_t old_fs;
+	unsigned int di_fmt;
+
+	if (fbi->fbops->fb_ioctl) {
+		old_fs = get_fs();
+		set_fs(KERNEL_DS);
+		fbi->fbops->fb_ioctl(fbi, MXCFB_GET_DIFMT,
+				(unsigned long)&di_fmt);
+		set_fs(old_fs);
+	}
+
+	return di_fmt;
 }
 
 static void update_display_setting(void)
@@ -317,7 +330,6 @@ static void update_display_setting(void)
 	struct fb_info *fbi;
 	struct v4l2_rect bg_crop_bounds[2];
 
-	mutex_lock(&gfb_mutex);
 	for (i = 0; i < num_registered_fb; i++) {
 		fbi = registered_fb[i];
 
@@ -333,14 +345,21 @@ static void update_display_setting(void)
 		g_fb_setting[i].crop_bounds.top = 0;
 		g_fb_setting[i].crop_bounds.width = fbi->var.xres;
 		g_fb_setting[i].crop_bounds.height = fbi->var.yres;
-		g_fb_setting[i].disp_fmt = get_ipu_fmt(fbi);
+		g_fb_setting[i].disp_fmt = get_fb_fmt(fbi);
+		g_fb_setting[i].if_fmt = get_ipu_fmt(fbi);
 
 		if (get_ipu_channel(fbi) == MEM_BG_SYNC) {
 			bg_crop_bounds[g_fb_setting[i].ipu_id] =
 				g_fb_setting[i].crop_bounds;
-			g_fb_setting[i].disp_support_csc = true;
+			if(colorspaceofpixel(g_fb_setting[i].disp_fmt) != colorspaceofpixel(g_fb_setting[i].if_fmt))
+				g_fb_setting[i].disp_support_csc = false;  // DP CSC need be used for fb to di output.
+			else
+				g_fb_setting[i].disp_support_csc = true;
 		} else if (get_ipu_channel(fbi) == MEM_FG_SYNC) {
-			g_fb_setting[i].disp_support_csc = true;
+			if(colorspaceofpixel(g_fb_setting[i].disp_fmt) != colorspaceofpixel(g_fb_setting[i].if_fmt))
+				g_fb_setting[i].disp_support_csc = false;  // DP CSC need be used for fb to di output.
+			else
+				g_fb_setting[i].disp_support_csc = true;
 			g_fb_setting[i].disp_support_windows = true;
 		}
 	}
@@ -352,7 +371,6 @@ static void update_display_setting(void)
 			g_fb_setting[i].crop_bounds =
 				bg_crop_bounds[g_fb_setting[i].ipu_id];
 	}
-	mutex_unlock(&gfb_mutex);
 }
 
 /* called after g_fb_setting filled by update_display_setting */
@@ -362,17 +380,12 @@ static int update_setting_from_fbi(struct mxc_vout_output *vout,
 	int i;
 	bool found = false;
 
-	mutex_lock(&gfbi_mutex);
-
-	update_display_setting();
-
 	for (i = 0; i < MAX_FB_NUM; i++) {
 		if (g_fb_setting[i].name) {
 			if (!strcmp(fbi->fix.id, g_fb_setting[i].name)) {
 				vout->crop_bounds = g_fb_setting[i].crop_bounds;
 				vout->disp_fmt = g_fb_setting[i].disp_fmt;
-				vout->disp_support_csc =
-					g_fb_setting[i].disp_support_csc;
+				vout->disp_support_csc = false;
 				vout->disp_support_windows =
 					g_fb_setting[i].disp_support_windows;
 				found = true;
@@ -383,7 +396,6 @@ static int update_setting_from_fbi(struct mxc_vout_output *vout,
 
 	if (!found) {
 		v4l2_err(vout->vfd->v4l2_dev, "can not find output\n");
-		mutex_unlock(&gfbi_mutex);
 		return -EINVAL;
 	}
 	strlcpy(vout->vfd->name, fbi->fix.id, sizeof(vout->vfd->name));
@@ -403,12 +415,8 @@ static int update_setting_from_fbi(struct mxc_vout_output *vout,
 	vout->task.output.crop.pos.y = 0;
 	vout->task.output.crop.w = vout->crop_bounds.width;
 	vout->task.output.crop.h = vout->crop_bounds.height;
-	if (colorspaceofpixel(vout->disp_fmt) == YUV_CS)
-		vout->task.output.format = IPU_PIX_FMT_UYVY;
-	else
-		vout->task.output.format = IPU_PIX_FMT_RGB565;
+	vout->task.output.format = vout->disp_fmt;
 
-	mutex_unlock(&gfbi_mutex);
 	return 0;
 }
 
@@ -952,7 +960,6 @@ static int mxc_vout_release(struct file *file)
 	if (!vout)
 		return 0;
 
-	mutex_lock(&vout->accs_lock);
 	if (--vout->open_cnt == 0) {
 		q = &vout->vbq;
 		if (q->streaming)
@@ -965,7 +972,6 @@ static int mxc_vout_release(struct file *file)
 		ret = videobuf_mmap_free(q);
 	}
 
-	mutex_unlock(&vout->accs_lock);
 	return ret;
 }
 
@@ -979,11 +985,11 @@ static int mxc_vout_open(struct file *file)
 	if (vout == NULL)
 		return -ENODEV;
 
-	mutex_lock(&vout->accs_lock);
 	if (vout->open_cnt++ == 0) {
 		vout->ctrl_rotate = 0;
 		vout->ctrl_vflip = 0;
 		vout->ctrl_hflip = 0;
+		update_display_setting();
 		ret = update_setting_from_fbi(vout, vout->fbi);
 		if (ret < 0)
 			goto err;
@@ -1013,7 +1019,6 @@ static int mxc_vout_open(struct file *file)
 	file->private_data = vout;
 
 err:
-	mutex_unlock(&vout->accs_lock);
 	return ret;
 }
 
@@ -1229,18 +1234,7 @@ static int mxc_vout_try_task(struct mxc_vout_output *vout)
 		v4l2_info(vout->vfd->v4l2_dev, "Bypass IC.\n");
 		output->format = input->format;
 	} else {
-		/* if need CSC, choose IPU-DP or IPU_IC do it */
-		if (vout->disp_support_csc) {
-			if (colorspaceofpixel(input->format) == YUV_CS)
-				output->format = IPU_PIX_FMT_UYVY;
-			else
-				output->format = IPU_PIX_FMT_RGB565;
-		} else {
-			if (colorspaceofpixel(vout->disp_fmt) == YUV_CS)
-				output->format = IPU_PIX_FMT_UYVY;
-			else
-				output->format = IPU_PIX_FMT_RGB565;
-		}
+		output->format = vout->disp_fmt;
 
 		vout->tiled_bypass_pp = false;
 		if ((IPU_PIX_FMT_TILED_NV12 == input->format) ||
@@ -2038,8 +2032,6 @@ static int mxc_vidioc_streamon(struct file *file, void *fh,
 	hrtimer_init(&vout->timer, CLOCK_REALTIME, HRTIMER_MODE_ABS);
 	vout->timer.function = mxc_vout_timer_handler;
 	vout->timer_stop = true;
-	vout->frame_count = 0;
-	vout->vdi_frame_cnt = 0;
 
 	vout->start_ktime = hrtimer_cb_get_time(&vout->timer);
 
@@ -2186,7 +2178,6 @@ static int mxc_vout_setup_output(struct mxc_vout_dev *dev)
 
 		mutex_init(&vout->mutex);
 		mutex_init(&vout->task_lock);
-		mutex_init(&vout->accs_lock);
 
 		strlcpy(vout->vfd->name, fbi->fix.id, sizeof(vout->vfd->name));
 

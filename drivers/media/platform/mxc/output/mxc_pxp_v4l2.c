@@ -37,7 +37,6 @@
 #include <linux/delay.h>
 #include <linux/console.h>
 #include <linux/mxcfb.h>
-#include <linux/platform_data/dma-imx.h>
 
 #include <media/videobuf-dma-contig.h>
 #include <media/v4l2-common.h>
@@ -59,80 +58,56 @@
 static int video_nr = -1;	/* -1 ==> auto assign */
 static struct pxp_data_format pxp_s0_formats[] = {
 	{
-		.name = "32-bit RGB",
-		.bpp = 4,
-		.fourcc = V4L2_PIX_FMT_RGB32,
-		.colorspace = V4L2_COLORSPACE_SRGB,
-	}, {
 		.name = "24-bit RGB",
-		.bpp = 3,
+		.bpp = 4,
 		.fourcc = V4L2_PIX_FMT_RGB24,
 		.colorspace = V4L2_COLORSPACE_SRGB,
+		.pxp_fmt = PXP_PIX_FMT_RGB24,
 	}, {
 		.name = "16-bit RGB 5:6:5",
 		.bpp = 2,
 		.fourcc = V4L2_PIX_FMT_RGB565,
 		.colorspace = V4L2_COLORSPACE_SRGB,
+		.pxp_fmt = PXP_PIX_FMT_RGB565,
 	}, {
 		.name = "16-bit RGB 5:5:5",
 		.bpp = 2,
 		.fourcc = V4L2_PIX_FMT_RGB555,
 		.colorspace = V4L2_COLORSPACE_SRGB,
+		.pxp_fmt = PXP_PIX_FMT_RGB555,
 	}, {
 		.name = "YUV 4:2:0 Planar",
 		.bpp = 2,
 		.fourcc = V4L2_PIX_FMT_YUV420,
 		.colorspace = V4L2_COLORSPACE_JPEG,
+		.pxp_fmt = PXP_PIX_FMT_YUV420P,
 	}, {
 		.name = "YUV 4:2:2 Planar",
 		.bpp = 2,
 		.fourcc = V4L2_PIX_FMT_YUV422P,
 		.colorspace = V4L2_COLORSPACE_JPEG,
+		.pxp_fmt = PXP_PIX_FMT_YUV422P,
 	}, {
 		.name = "UYVY",
 		.bpp = 2,
 		.fourcc = V4L2_PIX_FMT_UYVY,
 		.colorspace = V4L2_COLORSPACE_JPEG,
+		.pxp_fmt = PXP_PIX_FMT_UYVY,
 	}, {
 		.name = "YUYV",
 		.bpp = 2,
 		.fourcc = V4L2_PIX_FMT_YUYV,
 		.colorspace = V4L2_COLORSPACE_JPEG,
+		.pxp_fmt = PXP_PIX_FMT_YUYV,
 	}, {
 		.name = "YUV32",
 		.bpp = 4,
 		.fourcc = V4L2_PIX_FMT_YUV32,
 		.colorspace = V4L2_COLORSPACE_JPEG,
+		.pxp_fmt = PXP_PIX_FMT_VUY444,
 	},
 };
 
-static unsigned int v4l2_fmt_to_pxp_fmt(u32 v4l2_pix_fmt)
-{
-	u32 pxp_fmt = 0;
-
-	if (v4l2_pix_fmt == V4L2_PIX_FMT_RGB32)
-		pxp_fmt = PXP_PIX_FMT_RGB32;
-	else if (v4l2_pix_fmt == V4L2_PIX_FMT_RGB24)
-		pxp_fmt = PXP_PIX_FMT_RGB24;
-	else if (v4l2_pix_fmt == V4L2_PIX_FMT_RGB565)
-		pxp_fmt = PXP_PIX_FMT_RGB565;
-	else if (v4l2_pix_fmt == V4L2_PIX_FMT_RGB555)
-		pxp_fmt = PXP_PIX_FMT_RGB555;
-	else if (v4l2_pix_fmt == V4L2_PIX_FMT_RGB555)
-		pxp_fmt = PXP_PIX_FMT_RGB555;
-	else if (v4l2_pix_fmt == V4L2_PIX_FMT_YUV420)
-		pxp_fmt = PXP_PIX_FMT_YUV420P;
-	else if (v4l2_pix_fmt == V4L2_PIX_FMT_YUV422P)
-		pxp_fmt = PXP_PIX_FMT_YUV422P;
-	else if (v4l2_pix_fmt == V4L2_PIX_FMT_UYVY)
-		pxp_fmt = PXP_PIX_FMT_UYVY;
-	else if (v4l2_pix_fmt == V4L2_PIX_FMT_YUV32)
-		pxp_fmt = PXP_PIX_FMT_VUY444;
-	else if (v4l2_pix_fmt == V4L2_PIX_FMT_YUYV)
-		pxp_fmt = PXP_PIX_FMT_YUYV;
-
-	return pxp_fmt;
-}
 struct v4l2_queryctrl pxp_controls[] = {
 	{
 		.id 		= V4L2_CID_HFLIP,
@@ -252,14 +227,6 @@ static void video_dma_done(void *arg)
 	spin_unlock(&pxp->lock);
 }
 
-static bool chan_filter(struct dma_chan *chan, void *arg)
-{
-	if (imx_dma_is_pxp(chan))
-		return true;
-	else
-		return false;
-}
-
 static int acquire_dma_channel(struct pxps *pxp)
 {
 	dma_cap_mask_t mask;
@@ -281,7 +248,7 @@ static int acquire_dma_channel(struct pxps *pxp)
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_SLAVE, mask);
 	dma_cap_set(DMA_PRIVATE, mask);
-	chan = dma_request_channel(mask, chan_filter, NULL);
+	chan = dma_request_channel(mask, NULL, NULL);
 	if (!chan)
 		return -EBUSY;
 
@@ -319,8 +286,6 @@ static int pxp_set_fbinfo(struct pxps *pxp)
 	pxp->pxp_conf.out_param.stride = pxp->fbi->var.xres;
 	if (pxp->fbi->var.bits_per_pixel == 16)
 		fb->fmt.pixelformat = V4L2_PIX_FMT_RGB565;
-	else if (pxp->fbi->var.bits_per_pixel == 32)
-		fb->fmt.pixelformat = V4L2_PIX_FMT_RGB32;
 	else
 		fb->fmt.pixelformat = V4L2_PIX_FMT_RGB24;
 
@@ -469,11 +434,9 @@ static int pxp_s_output(struct file *file, void *fh,
 		return -EINVAL;
 
 	/* Output buffer is same format as fbdev */
-	if (fmt->pixelformat == V4L2_PIX_FMT_RGB32  ||
+	if (fmt->pixelformat == V4L2_PIX_FMT_RGB24  ||
 		fmt->pixelformat == V4L2_PIX_FMT_YUV32)
 		bpp = 4;
-	else if (fmt->pixelformat == V4L2_PIX_FMT_RGB24)
-		bpp = 3;
 	else
 		bpp = 2;
 
@@ -490,9 +453,7 @@ static int pxp_s_output(struct file *file, void *fh,
 
 	pxp->pxp_conf.out_param.width = fmt->width;
 	pxp->pxp_conf.out_param.height = fmt->height;
-	if (fmt->pixelformat == V4L2_PIX_FMT_RGB32)
-		pxp->pxp_conf.out_param.pixel_fmt = PXP_PIX_FMT_RGB32;
-	else if (fmt->pixelformat == V4L2_PIX_FMT_RGB24)
+	if (fmt->pixelformat == V4L2_PIX_FMT_RGB24)
 		pxp->pxp_conf.out_param.pixel_fmt = PXP_PIX_FMT_RGB24;
 	else
 		pxp->pxp_conf.out_param.pixel_fmt = PXP_PIX_FMT_RGB565;
@@ -537,21 +498,17 @@ static int pxp_g_fmt_video_output(struct file *file, void *fh,
 	return 0;
 }
 
-static struct pxp_data_format *pxp_get_format(struct v4l2_format *f)
+static struct pxp_data_format *pxp_get_format(u32 fourcc)
 {
 	struct pxp_data_format *fmt;
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(pxp_s0_formats); i++) {
 		fmt = &pxp_s0_formats[i];
-		if (fmt->fourcc == f->fmt.pix.pixelformat)
-			break;
+		if (fmt->fourcc == fourcc)
+			return fmt;
 	}
-
-	if (i == ARRAY_SIZE(pxp_s0_formats))
-		return NULL;
-
-	return &pxp_s0_formats[i];
+	return NULL;
 }
 
 static int pxp_try_fmt_video_output(struct file *file, void *fh,
@@ -559,7 +516,7 @@ static int pxp_try_fmt_video_output(struct file *file, void *fh,
 {
 	int w = f->fmt.pix.width;
 	int h = f->fmt.pix.height;
-	struct pxp_data_format *fmt = pxp_get_format(f);
+	struct pxp_data_format *fmt = pxp_get_format(f->fmt.pix.pixelformat);
 
 	if (!fmt)
 		return -EINVAL;
@@ -572,7 +529,6 @@ static int pxp_try_fmt_video_output(struct file *file, void *fh,
 	f->fmt.pix.width = w;
 	f->fmt.pix.height = h;
 	f->fmt.pix.pixelformat = fmt->fourcc;
-
 	return 0;
 }
 
@@ -589,9 +545,8 @@ static int pxp_s_fmt_video_output(struct file *file, void *fh,
 
 	ret = pxp_try_fmt_video_output(file, fh, f);
 	if (ret == 0) {
-		pxp->s0_fmt = pxp_get_format(f);
-		pxp->pxp_conf.s0_param.pixel_fmt =
-			v4l2_fmt_to_pxp_fmt(pxp->s0_fmt->fourcc);
+		pxp->s0_fmt = pxp_get_format(f->fmt.pix.pixelformat);
+		pxp->pxp_conf.s0_param.pixel_fmt = pxp->s0_fmt->pxp_fmt;
 		pxp->pxp_conf.s0_param.width = pf->width;
 		pxp->pxp_conf.s0_param.height = pf->height;
 	}
@@ -1056,17 +1011,16 @@ static int pxp_s_crop(struct file *file, void *fh,
 	w = max(w, PXP_MIN_PIX);
 	h = min(h, fbh);
 	h = max(h, PXP_MIN_PIX);
+	if ((l + w) > fbw)
+		l = 0;
+	if ((t + h) > fbh)
+		t = 0;
 
 	/* Round up values to PxP pixel block */
 	l = roundup(l, PXP_MIN_PIX);
 	t = roundup(t, PXP_MIN_PIX);
 	w = roundup(w, PXP_MIN_PIX);
 	h = roundup(h, PXP_MIN_PIX);
-
-	if ((l + w) > fbw)
-		l = 0;
-	if ((t + h) > fbh)
-		t = 0;
 
 	pxp->pxp_conf.proc_data.drect.left = l;
 	pxp->pxp_conf.proc_data.drect.top = t;

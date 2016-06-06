@@ -21,7 +21,6 @@
 #include <linux/media.h>
 #include <linux/module.h>
 #include <linux/of_gpio.h>
-#include <linux/of_graph.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 
@@ -1856,7 +1855,7 @@ static int s5k5baf_parse_device_node(struct s5k5baf *state, struct device *dev)
 	if (ret < 0)
 		return ret;
 
-	node_ep = of_graph_get_next_endpoint(node, NULL);
+	node_ep = v4l2_of_get_next_endpoint(node, NULL);
 	if (!node_ep) {
 		dev_err(dev, "no endpoint defined at node %s\n",
 			node->full_name);

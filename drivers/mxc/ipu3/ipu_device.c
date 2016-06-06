@@ -1,5 +1,5 @@
 /*
- * Copyright 2005-2015 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright 2005-2014 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
 /*
@@ -463,6 +463,8 @@ cs_t colorspaceofpixel(int fmt)
 	case IPU_PIX_FMT_RGBA32:
 	case IPU_PIX_FMT_RGB32:
 	case IPU_PIX_FMT_ABGR32:
+	case IPU_PIX_FMT_LVDS666:
+	case IPU_PIX_FMT_LVDS888:
 		return RGB_CS;
 		break;
 	case IPU_PIX_FMT_UYVY:
@@ -477,6 +479,8 @@ cs_t colorspaceofpixel(int fmt)
 	case IPU_PIX_FMT_NV12:
 	case IPU_PIX_FMT_TILED_NV12:
 	case IPU_PIX_FMT_TILED_NV12F:
+	case IPU_PIX_FMT_BT656:
+	case IPU_PIX_FMT_BT1120:
 		return YUV_CS;
 		break;
 	default:
@@ -506,21 +510,9 @@ static int soc_max_in_width(u32 is_vdoa)
 	return is_vdoa ? 8192 : 4096;
 }
 
-static int soc_max_vdi_in_width(struct ipu_soc *ipu)
+static int soc_max_vdi_in_width(void)
 {
-	int i;
-
-	if (!ipu) {
-		for (i = 0; i < max_ipu_no; i++) {
-			ipu = ipu_get_soc(i);
-			if (!IS_ERR_OR_NULL(ipu))
-				break;
-		}
-
-		if (i == max_ipu_no)
-			return 720;
-	}
-	return IPU_MAX_VDI_IN_WIDTH(ipu->devtype);
+	return IPU_MAX_VDI_IN_WIDTH;
 }
 static int soc_max_in_height(void)
 {
@@ -864,7 +856,7 @@ static int update_split_setting(struct ipu_task_entry *t, bool vdi_split)
 		right_stripe.output_column = ow / 2;
 
 		if (vdi_split)
-			max_width = soc_max_vdi_in_width(t->ipu);
+			max_width = soc_max_vdi_in_width();
 		else
 			max_width = soc_max_out_width();
 		ret = ipu_calc_stripes_sizes(iw,
@@ -1160,8 +1152,7 @@ static int check_task(struct ipu_task_entry *t)
 		if (t->output.crop.h > soc_max_out_height())
 			t->set.split_mode |= UD_SPLIT;
 		if (!t->set.split_mode && (t->set.mode & VDI_MODE) &&
-				(t->input.crop.w >
-				 soc_max_vdi_in_width(t->ipu))) {
+				(t->input.crop.w > soc_max_vdi_in_width())) {
 			t->set.split_mode |= RL_SPLIT;
 			vdi_split = true;
 		}
@@ -2269,10 +2260,10 @@ static void uninit_ic(struct ipu_soc *ipu, struct ipu_task_entry *t)
 		CHECK_RETCODE_CONT(ret < 0, "ipu_unlink_ch vdoa_ic",
 				STATE_UNLINK_CHAN_FAIL, ret);
 	}
-	ipu_uninit_channel(ipu, t->set.ic_chan);
+	ipu_uninit_channel(ipu, t->set.ic_chan, NULL);
 	if (deinterlace_3_field(t)) {
-		ipu_uninit_channel(ipu, t->set.vdi_ic_p_chan);
-		ipu_uninit_channel(ipu, t->set.vdi_ic_n_chan);
+		ipu_uninit_channel(ipu, t->set.vdi_ic_p_chan, NULL);
+		ipu_uninit_channel(ipu, t->set.vdi_ic_n_chan, NULL);
 	}
 }
 
@@ -2353,7 +2344,7 @@ done:
 
 static void uninit_rot(struct ipu_soc *ipu, struct ipu_task_entry *t)
 {
-	ipu_uninit_channel(ipu, t->set.rot_chan);
+	ipu_uninit_channel(ipu, t->set.rot_chan, NULL);
 }
 
 static int get_irq(struct ipu_task_entry *t)
@@ -3048,8 +3039,7 @@ static void get_res_do_task(struct ipu_task_entry *t)
 			do_task_vdoa_only(t);
 		else if ((IPU_PIX_FMT_TILED_NV12F == t->input.format) &&
 				(t->set.mode & VDOA_BAND_MODE) &&
-				(t->input.crop.w >
-				 soc_max_vdi_in_width(t->ipu)))
+				(t->input.crop.w > soc_max_vdi_in_width()))
 			do_task_vdoa_vdi(t);
 		else
 			do_task(t);
@@ -3382,6 +3372,7 @@ int ipu_queue_task(struct ipu_task *task)
 	u32 tmp_task_no;
 	DECLARE_PERF_VAR;
 
+	pr_debug("%s: %dx%d to %dx%d\n", __func__, task->input.width, task->input.height, task->output.width, task->output.height);
 	tsk = create_task_entry(task);
 	if (IS_ERR(tsk))
 		return PTR_ERR(tsk);
@@ -3502,6 +3493,7 @@ static long mxc_ipu_ioctl(struct file *file,
 					(&task, (struct ipu_task *) arg,
 					 sizeof(struct ipu_task)))
 				return -EFAULT;
+			pr_debug("%s: %dx%d to %dx%d\n", __func__, task.input.width, task.input.height, task.output.width, task.output.height);
 			ret = ipu_queue_task(&task);
 			break;
 		}
